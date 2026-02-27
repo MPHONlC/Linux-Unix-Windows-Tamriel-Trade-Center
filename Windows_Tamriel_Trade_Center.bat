@@ -1,8 +1,21 @@
 @echo off
+
 :: =======================================================================================
 :: Windows Tamriel Trade Center: Cross-Platform Auto-Updater for TTC, HarvestMap & ESO-Hub
 :: Created by @APHONIC
 :: =======================================================================================
+
+:: =======================================================================================
+:: DISCLAIMER & CREDITS
+:: Icon Source: Official favicon from Tamriel Trade Centre (https://tamrieltradecentre.com)
+:: Data Sources: Tamriel Trade Centre, HarvestMap, and ESO-Hub.
+:: 
+:: This script is a utility to automate local data updates. It is not 
+:: affiliated with, nor does it claim ownership of, the aforementioned addons. 
+:: All rights belong to their original creators. Provided "as is" with no warranty;
+:: the author is not responsible for any data loss. Always back up SavedVariables.
+:: =======================================================================================
+
 setlocal
 set "SCRIPT_FULL_PATH=%~f0"
 set "PS_ARGS=%*"
@@ -21,7 +34,7 @@ exit /b %errorlevel%
 $ErrorActionPreference = "SilentlyContinue"
 
 # VERSION
-$APP_VERSION = "4.0"
+$APP_VERSION = "4.1"
 $APP_TITLE = "Windows Tamriel Trade Center v$APP_VERSION"
 $TASK_NAME = "Windows Tamriel Trade Center v$APP_VERSION"
 
@@ -48,7 +61,6 @@ try {
         public static extern bool SetForegroundWindow(IntPtr hWnd);
         [DllImport("user32.dll")]
         public static extern bool IsIconic(IntPtr hWnd);
-
         public static void HideWindow() {
             IntPtr hWnd = GetConsoleWindow();
             if (hWnd != IntPtr.Zero) ShowWindow(hWnd, SW_HIDE);
@@ -92,6 +104,7 @@ if (!(Test-Path $ICON_FILE)) {
 $createdNew = $false
 $mutex = New-Object System.Threading.Mutex($true, "Global\WTTC_Updater_Mutex_$APP_VERSION", [ref]$createdNew)
 if (!$createdNew) {
+   
     try {
         $evt = [System.Threading.EventWaitHandle]::OpenExisting("Global\WTTC_RestoreEvent_$APP_VERSION")
         $evt.Set()
@@ -112,9 +125,10 @@ if (!$createdNew) {
 # pre parse arguments
 $parsedArgs = @()
 if ([string]::IsNullOrWhiteSpace($env:PS_ARGS) -eq $false) {
-    $parsedArgs = [System.Text.RegularExpressions.Regex]::Matches($env:PS_ARGS, '[\"]([^\"]+)[\"]|([^ ]+)') | ForEach-Object {
-        if ($_.Groups[1].Success) { $_.Groups[1].Value } else { $_.Groups[2].Value }
-    }
+    $parsedArgs = [System.Text.RegularExpressions.Regex]::Matches($env:PS_ARGS, '[\"]([^\"]+)[\"]|([^ ]+)') |
+        ForEach-Object {
+            if ($_.Groups[1].Success) { $_.Groups[1].Value } else { $_.Groups[2].Value }
+        }
 }
 $global:HAS_ARGS = if ($parsedArgs.Count -gt 0) {$true} else {$false}
 $global:IS_TASK = $false
@@ -181,7 +195,8 @@ $SCRIPT_NAME = Split-Path $FULL_SCRIPT_PATH -Leaf
 
 function Load-Config($path) {
     if (Test-Path $path) {
-        Get-Content $path | ForEach-Object {
+        Get-Content $path |
+        ForEach-Object {
             if ($_ -match '^\s*([^=]+)\s*=\s*(.*)$') {
                 $key = $matches[1].Trim()
                 $val = $matches[2].Trim().Trim('"').Trim("'")
@@ -213,6 +228,7 @@ if (!$EH_LOC_7) { $global:EH_LOC_7 = 0 }
 if (!$EH_LOC_9) { $global:EH_LOC_9 = 0 }
 if (!$HM_LAST_DOWNLOAD) { $global:HM_LAST_DOWNLOAD = 0 }
 if (!$HM_LAST_CHECK) { $global:HM_LAST_CHECK = 0 }
+if (!$EH_USER_TOKEN) { $global:EH_USER_TOKEN = "" }
 
 function save_config {
     $c = @"
@@ -234,6 +250,7 @@ EH_LOC_7="$EH_LOC_7"
 EH_LOC_9="$EH_LOC_9"
 HM_LAST_DOWNLOAD="$HM_LAST_DOWNLOAD"
 HM_LAST_CHECK="$HM_LAST_CHECK"
+EH_USER_TOKEN="$EH_USER_TOKEN"
 "@
     $c | Out-File -FilePath $CONFIG_FILE -Encoding UTF8 -Force
 }
@@ -289,6 +306,7 @@ function auto_scan_addons {
 function run_setup {
     [ConsoleConfig]::RestoreWindow()
     Clear-Host
+ 
     Write-Host "`n$ESC[0;33m--- Initial Setup & Configuration ---$ESC[0m"
 
     if ($CURRENT_DIR -ne $TARGET_DIR) {
@@ -300,6 +318,7 @@ function run_setup {
 
     Write-Host "`n$ESC[0;33m1. Which server do you play on? (For TTC Pricing)$ESC[0m"
     Write-Host "1) North America (NA)`n2) Europe (EU)"
+   
     $global:AUTO_SRV = Read-Host "Choice [1-2]"
 
     Write-Host "`n$ESC[0;33m2. Do you want the terminal to be visible when launching via Steam?$ESC[0m"
@@ -333,6 +352,65 @@ function run_setup {
     $ans = Read-Host "Choice [1-2]"
     $global:ENABLE_NOTIFS = if ($ans -eq "1") {$true} else {$false}
 
+    Write-Host "`n$ESC[0;33m6. ESO-Hub Integration (Optional)$ESC[0m"
+    Write-Host "`n$ESC[0;33m6. (DO NOT SHARE YOUR TOKENS TO ANYONE)$ESC[0m"
+    Write-Host "1) Log in with Username and Password (Fetches API Token securely, and deletes your credentials.)"
+    Write-Host "2) Manually enter API Token (If you already know your token)"
+    Write-Host "3) Skip / Upload Anonymously No Login (Default)"
+    $eh_choice = Read-Host "Choice [1-3]"
+
+    $global:EH_USER_TOKEN = ""
+    if ($eh_choice -eq "1") {
+        $EH_USER = Read-Host "ESO-Hub Username"
+        $EH_USER = $EH_USER.Trim()
+        
+        try {
+            $securePass = Read-Host "ESO-Hub Password" -AsSecureString
+            $EH_PASS = (New-Object System.Management.Automation.PSCredential("user", $securePass)).GetNetworkCredential().Password
+            # Trim leading/trailing whitespace and newlines from bad copy/pastes
+            $EH_PASS = $EH_PASS.Trim()
+        } catch {
+            $EH_PASS = ""
+        }
+
+        if ([string]::IsNullOrEmpty($EH_PASS)) {
+            Write-Host "$ESC[0;31m[-] Invalid password input. Falling back to anonymous mode.$ESC[0m"
+        } else {
+            Write-Host "`n$ESC[36mAuthenticating with ESO-Hub API...$ESC[0m"
+
+            # Use native curl.exe for URL-encoding behavior
+            $curlArgs = @(
+                "-s", "-X", "POST",
+                "-H", "User-Agent: ESOHubClient/1.0.9",
+                "--data-urlencode", "client_system=windows",
+                "--data-urlencode", "client_version=1.0.9",
+                "--data-urlencode", "client_version_int=1009",
+                "--data-urlencode", "lang=en",
+                "--data-urlencode", "username=$EH_USER",
+                "--data-urlencode", "password=$EH_PASS",
+                "https://data.eso-hub.com/v1/api/login"
+            )
+
+            try {
+                $loginRespRaw = & curl.exe $curlArgs
+                
+                if ($loginRespRaw -match '"token"\s*:\s*"([^"]+)"') {
+                    $global:EH_USER_TOKEN = $matches[1]
+                    Write-Host "$ESC[0;32m[+] Successfully logged in! Token saved securely.$ESC[0m"
+                } else {
+                    Write-Host "$ESC[0;31m[-] Login failed. Please check your credentials. Falling back to anonymous mode.$ESC[0m"
+                }
+            } catch {
+                Write-Host "$ESC[0;31m[-] Network error reaching API. Falling back to anonymous mode.$ESC[0m"
+            }
+        }
+        $EH_USER = ""
+        $EH_PASS = ""
+        $securePass = $null
+    } elseif ($eh_choice -eq "2") {
+        $global:EH_USER_TOKEN = Read-Host "Token"
+    }
+
     # Cleanup any old shortcuts and tasks
     $DesktopPath = [Environment]::GetFolderPath("Desktop")
     $startupPath = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup"
@@ -341,7 +419,8 @@ function run_setup {
     
     if (Test-Path "$DesktopPath\Windows Tamriel Trade Center.lnk") { Remove-Item "$DesktopPath\Windows Tamriel Trade Center.lnk" -Force -ErrorAction SilentlyContinue }
 
-    Write-Host "`n$ESC[0;33m6. Run automatically in the background when PC Starts?$ESC[0m"
+ 
+    Write-Host "`n$ESC[0;33m7. Run automatically in the background when PC Starts?$ESC[0m"
     Write-Host "`n$ESC[0;33mOptions that require to delete Scheduled Task will always ask for UAC (Admin Access)$ESC[0m"
     Write-Host "1) Yes - Advanced Mode (Requires Admin, completely invisible Scheduled Task)"
     Write-Host "2) Yes - Standard Mode (No Admin, places hidden shortcut in Startup folder)"
@@ -357,6 +436,7 @@ function run_setup {
         $global:STARTUP_MODE = "2" 
         
         $tasksToRemove = Get-ScheduledTask | Where-Object {$_.TaskName -match "Windows_TTC_Updater|Windows Tamriel Trade Center"} -ErrorAction SilentlyContinue
+     
         if ($tasksToRemove) {
             Write-Host " -> Removing old Scheduled Task (Requires Admin to unregister)..." -ForegroundColor Yellow
             $delCmd = "Get-ScheduledTask | Where-Object {`$_.TaskName -match 'Windows_TTC_Updater|Windows Tamriel Trade Center'} | Unregister-ScheduledTask -Confirm:`$false"
@@ -367,7 +447,8 @@ function run_setup {
         if (Test-Path $vbsLauncher) { Remove-Item $vbsLauncher -Force -ErrorAction SilentlyContinue }
     }
     else { 
-        $global:STARTUP_MODE = "0" 
+   
+         $global:STARTUP_MODE = "0" 
         if (Test-Path $startupShortcut) { Remove-Item $startupShortcut -Force -ErrorAction SilentlyContinue }
         
         $tasksToRemove = Get-ScheduledTask | Where-Object {$_.TaskName -match "Windows_TTC_Updater|Windows Tamriel Trade Center"} -ErrorAction SilentlyContinue
@@ -402,6 +483,7 @@ Register-ScheduledTask -Action `$action -Trigger `$trigger -Settings `$settings 
         Start-Sleep -Seconds 2
         if (Get-ScheduledTask -TaskName $TASK_NAME -ErrorAction SilentlyContinue) {
             Write-Host "$ESC[0;32m[+] Background Startup Task created successfully.$ESC[0m"
+  
             Write-Log "Background Startup Task registered." "Information"
         } else {
             Write-Host "$ESC[0;31m[-] Failed to get proper admin privileges or action was canceled.$ESC[0m"
@@ -424,12 +506,14 @@ Register-ScheduledTask -Action `$action -Trigger `$trigger -Settings `$settings 
             $WshShell = New-Object -comObject WScript.Shell
             $fallbackShortcut = $WshShell.CreateShortcut($startupShortcut)
             $fallbackShortcut.TargetPath = "powershell.exe"
+         
             $fallbackShortcut.Arguments = "-WindowStyle Hidden -ExecutionPolicy Bypass -Command `"Start-Process -FilePath '$TARGET_DIR\$SCRIPT_NAME' -ArgumentList '--silent --loop --task' -WindowStyle Hidden`""
             $fallbackShortcut.WindowStyle = 7
             if (Test-Path $ICON_FILE) { $fallbackShortcut.IconLocation = $ICON_FILE }
             $fallbackShortcut.Save()
             Write-Host "$ESC[0;32m[+] Startup shortcut created successfully.$ESC[0m"
             Write-Log "Startup Shortcut registered." "Information"
+    
         } catch { Write-Host "$ESC[0;31m[-] Failed to create startup shortcut.$ESC[0m" }
     } else {
         Write-Host "`n -> Skipping startup registration & ensuring clean state.$ESC[0m"
@@ -438,7 +522,7 @@ Register-ScheduledTask -Action `$action -Trigger `$trigger -Settings `$settings 
     $global:SETUP_COMPLETE = $true
     save_config
 
-    Write-Host "`n$ESC[0;33m7. Desktop Shortcut$ESC[0m"
+    Write-Host "`n$ESC[0;33m8. Desktop Shortcut$ESC[0m"
     Write-Host "1) Yes - Run normally (Show terminal output)"
     Write-Host "2) Yes - Run hidden (Background, uses tray icon)"
     Write-Host "3) No"
@@ -485,7 +569,7 @@ Register-ScheduledTask -Action `$action -Trigger `$trigger -Settings `$settings 
     
     Write-Host "$ESC[0;104m $LAUNCH_CMD $ESC[0m`n"
     
-    Write-Host "$ESC[0;33m8. Steam Launch Options$ESC[0m"
+    Write-Host "$ESC[0;33m9. Steam Launch Options$ESC[0m"
     Write-Host "Would you like this script to automatically inject the Launch Command into your Steam configuration?"
     Write-Host "(WARNING: Steam MUST be closed to do this. We can close it for you.)"
     $ans = Read-Host "Apply automatically? (y/n)"
@@ -501,6 +585,7 @@ Register-ScheduledTask -Action `$action -Trigger `$trigger -Settings `$settings 
         $backupDir = Join-Path $TARGET_DIR "Backups"
         if (!(Test-Path $backupDir)) { New-Item -ItemType Directory -Force -Path $backupDir | Out-Null }
         
+       
         $confPaths = @("${env:ProgramFiles(x86)}\Steam\userdata\*\config\localconfig.vdf", "$env:ProgramFiles\Steam\userdata\*\config\localconfig.vdf")
         $confFiles = Get-ChildItem -Path $confPaths -ErrorAction SilentlyContinue
 
@@ -509,6 +594,7 @@ Register-ScheduledTask -Action `$action -Trigger `$trigger -Settings `$settings 
             $steamId = (Get-Item $conf.FullName).Directory.Parent.Name
             $backupFile = Join-Path $backupDir "localconfig_${steamId}_${timestamp}.vdf"
             Copy-Item -Path $conf.FullName -Destination $backupFile -Force
+      
             Write-Host "$ESC[0;36m-> Backed up Steam config to: $backupFile$ESC[0m"
 
             Write-Host "$ESC[0;36m-> Injecting into $($conf.FullName)...$ESC[0m"
@@ -521,6 +607,7 @@ Register-ScheduledTask -Action `$action -Trigger `$trigger -Settings `$settings 
                     $text = [regex]::Replace($text, '("306130"\s*\{[\s\S]*?)"LaunchOptions"\s*"[^"]*"', "`${1}`"LaunchOptions`"`t`t`"$escapedStr`"")
                 } else {
                     $text = [regex]::Replace($text, '("306130"\s*\{)', "`${1}`n`t`t`t`t`"LaunchOptions`"`t`t`"$escapedStr`"")
+              
                 }
             } else {
                 $text = [regex]::Replace($text, '("apps"\s*\{)', "`${1}`n`t`t`t`"306130`"`n`t`t`t{`n`t`t`t`t`"LaunchOptions`"`t`t`"$escapedStr`"`n`t`t`t}")
@@ -528,6 +615,7 @@ Register-ScheduledTask -Action `$action -Trigger `$trigger -Settings `$settings 
             
             $Utf8NoBomEncoding = New-Object System.Text.UTF8Encoding $False
             [System.IO.File]::WriteAllText($conf.FullName, $text, $Utf8NoBomEncoding)
+          
             Write-Host "$ESC[0;32m[+] Successfully injected Launch Options into Steam!$ESC[0m"
         }
         Write-Host "$ESC[0;33m[!] Restarting Steam...$ESC[0m"
@@ -544,6 +632,7 @@ $INSTALLED_SCRIPT = "$TARGET_DIR\$SCRIPT_NAME"
 if ($SETUP_COMPLETE -and !$HAS_ARGS) {
     if ((Test-Path $INSTALLED_SCRIPT) -and (Test-Path $CONFIG_FILE)) {
         Clear-Host
+     
         Write-Host "$ESC[0;32m[+] Configuration found! Using saved settings.$ESC[0m"
         Write-Host "$ESC[0;36m-> Press 'y' to re-run setup, or wait 5 seconds to continue automatically...`n$ESC[0m"
         
@@ -552,6 +641,7 @@ if ($SETUP_COMPLETE -and !$HAS_ARGS) {
         $key = $null
         while ($sw.elapsed -lt $timeout) {
             [ConsoleConfig]::CheckMinimizedAndHide() | Out-Null
+    
             [System.Windows.Forms.Application]::DoEvents()
             if ($host.UI.RawUI.KeyAvailable) { $key = $host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown"); break }
             Start-Sleep -Milliseconds 50
@@ -560,6 +650,7 @@ if ($SETUP_COMPLETE -and !$HAS_ARGS) {
         if ($key -and $key.Character -match '^[Yy]$') { 
             run_setup 
         } else {
+     
             if ($CURRENT_DIR -ne $TARGET_DIR) {
                 Copy-Item -Path $FULL_SCRIPT_PATH -Destination "$TARGET_DIR\$SCRIPT_NAME" -Force
             }
@@ -593,6 +684,7 @@ while ($true) {
     $RAND_UA = $USER_AGENTS | Get-Random
 
     if (!$SILENT) {
+     
         Clear-Host
         Write-Host "$ESC[0;92m===========================================================================$ESC[0m"
         Write-Host "$ESC[1m$ESC[0;94m                         $APP_TITLE$ESC[0m"
@@ -627,7 +719,7 @@ while ($true) {
     } else {
         # UPLOAD TTC DATA
         if (!$SILENT) { Write-Host "$ESC[1m$ESC[97m [1/4] Uploading your Local TTC Data to TTC Server $ESC[0m" }
-        
+     
         $TTC_CHANGED = $true
         if (Test-Path "$SAVED_VAR_DIR\TamrielTradeCentre.lua") {
             if (Test-Path "$TARGET_DIR\lttc_ttc_snapshot.lua") {
@@ -642,38 +734,48 @@ while ($true) {
                 Copy-Item -Path "$SAVED_VAR_DIR\TamrielTradeCentre.lua" -Destination "$TARGET_DIR\lttc_ttc_snapshot.lua" -Force -ErrorAction SilentlyContinue
                 if (!$SILENT) {
                     Write-Host " $ESC[36mExtracting recent sales data from Lua (Showing up to 30 recent entries)...$ESC[0m"
+          
                     $max_time = [long]$TTC_LAST_SALE; $lines = New-Object System.Collections.ArrayList
                     $name = ""; $price = ""; $amt = ""; $qual = ""; $stime = ""
                     
                     try {
+         
                         foreach ($line in [System.IO.File]::ReadLines("$SAVED_VAR_DIR\TamrielTradeCentre.lua")) {
                             if ($line -match '\["Amount"\]\s*=\s*(\d+)') { $amt = $matches[1] }
                             if ($line -match '\["QualityID"\]\s*=\s*(\d+)') { $qual = $matches[1] }
+         
                             if ($line -match '\["SaleTime"\]\s*=\s*(\d+)') { $stime = $matches[1] }
                             if ($line -match '\["TotalPrice"\]\s*=\s*(\d+)') { $price = $matches[1] }
                             if ($line -match '\["Name"\]\s*=\s*"([^"]+)"') { $name = $matches[1] }
+ 
                             if ($line -match '\}') {
                                 if ($name -ne "" -and $price -ne "") {
+                             
                                     $stimeNum = $stime -as [long]
                                     if ($stimeNum -gt $max_time) { $max_time = $stimeNum }
                                     if ($stimeNum -gt [long]$TTC_LAST_SALE) {
+     
                                         $c = switch ($qual) { 0 {"$ESC[90m"}; 1 {"$ESC[97m"}; 2 {"$ESC[32m"}; 3 {"$ESC[36m"}; 4 {"$ESC[35m"}; 5 {"$ESC[33m"}; 6 {"$ESC[38;5;214m"}; default {"$ESC[0m"} }
                                         [void]$lines.Add(" for $ESC[32m$price$ESC[33mgold$ESC[0m - $ESC[32m${amt}x$ESC[0m $c$name$ESC[0m")
                                     }
+                 
                                 }
                                 $name = ""; $price = ""; $amt = ""; $qual = ""; $stime = ""
                             }
                         }
                     } catch {}
 
+               
                     $start = if ($lines.Count -gt 30) { $lines.Count - 30 } else { 0 }
                     if ($lines.Count -gt 0) { for ($i = $start; $i -lt $lines.Count; $i++) { Write-Host $lines[$i] } }
                     else { Write-Host " $ESC[90mNo new sales found since last upload.$ESC[0m" }
 
+             
                     if ($max_time -gt [long]$TTC_LAST_SALE) {
                         $global:TTC_LAST_SALE = $max_time
                         $CONFIG_CHANGED = $true
                     }
+                 
                     Write-Host "`n $ESC[36mUploading to:$ESC[0m https://$TTC_DOMAIN/pc/Trade/WebClient/Upload"
                 }
                 curl.exe -s -A "$TTC_USER_AGENT" -H "Accept: text/html,application/xhtml+xml,application/xml" -F "SavedVarFileInput=@$SAVED_VAR_DIR\TamrielTradeCentre.lua" "https://$TTC_DOMAIN/pc/Trade/WebClient/Upload" | Out-Null
@@ -695,6 +797,7 @@ while ($true) {
         try {
             $API_RESP = Invoke-RestMethod -Uri "https://$TTC_DOMAIN/api/GetTradeClientVersion" -UserAgent $TTC_USER_AGENT
             $SRV_VERSION = $API_RESP.PriceTableVersion
+   
         } catch { $SRV_VERSION = $null }
 
         if (!$SRV_VERSION) {
@@ -706,6 +809,7 @@ while ($true) {
             $PT_FILE = if ($AUTO_SRV -eq "2") {"$ADDON_DIR\TamrielTradeCentre\PriceTableEU.lua"} else {"$ADDON_DIR\TamrielTradeCentre\PriceTableNA.lua"}
             
             if (Test-Path $PT_FILE) {
+  
                 $head = Get-Content $PT_FILE -TotalCount 5
                 foreach ($l in $head) {
                     if ($l -match '^--Version[ \t]*=[ \t]*([0-9]+)') { $LOCAL_VERSION = $matches[1]; break }
@@ -716,10 +820,12 @@ while ($true) {
             $V_COL = if ([int]$SRV_VERSION -eq [int]$LOCAL_VERSION) {"$ESC[92m"} else {"$ESC[31m"}
 
             if ([int]$SRV_VERSION -gt [int]$LOCAL_VERSION) {
+            
                 if (!$SILENT) { Write-Host -NoNewline " $ESC[92mNew TTC Price Table available $ESC[0m" }
                 $TTC_TIME_DIFF = $CURRENT_TIME - [int]$TTC_LAST_DOWNLOAD
                 if ($TTC_TIME_DIFF -lt 3600 -and $TTC_TIME_DIFF -ge 0) {
                     $WAIT_MINS = [math]::Floor((3600 - $TTC_TIME_DIFF) / 60)
+              
                     if ($notifTTC -eq "Data Uploaded") { $notifTTC = "Uploaded (DL Cooldown)" } else { $notifTTC = "Download Cooldown" }
                     if (!$SILENT) {
                         Write-Host "`n `t$ESC[90mServer Version: ${V_COL}$SRV_VERSION$ESC[0m"
@@ -729,10 +835,12 @@ while ($true) {
                 } else {
                     if (!$SILENT) {
                         Write-Host "`n `t$ESC[90mServer Version: ${V_COL}$SRV_VERSION$ESC[0m"
+        
                         Write-Host " `t$ESC[90mLocal Version: ${V_COL}$LOCAL_DISPLAY$ESC[0m"
                         Write-Host " $ESC[36mDownloading from:$ESC[0m $TTC_URL"
                     }
                     
+            
                     $TEMP_DIR_USED = $true
                     $zipPath = "$TEMP_DIR\TTC-data.zip"
                     curl.exe -f -A "$TTC_USER_AGENT" -# -L -o $zipPath "$TTC_URL"
@@ -741,20 +849,25 @@ while ($true) {
                         Expand-Archive -Path $zipPath -DestinationPath "$TEMP_DIR\TTC_Extracted" -Force
                         if (!(Test-Path "$ADDON_DIR\TamrielTradeCentre")) { New-Item -ItemType Directory -Force -Path "$ADDON_DIR\TamrielTradeCentre" | Out-Null }
                         Copy-Item -Path "$TEMP_DIR\TTC_Extracted\*" -Destination "$ADDON_DIR\TamrielTradeCentre\" -Recurse -Force
+  
                         Send-Live-Update "TTC: Downloading and extracting latest price data..."
                         $global:TTC_LAST_DOWNLOAD = $CURRENT_TIME
                         $global:TTC_LOC_VERSION = $SRV_VERSION
+                   
                         $CONFIG_CHANGED = $true
                         if ($notifTTC -eq "Data Uploaded") { $notifTTC = "Uploaded & Updated" } else { $notifTTC = "Updated" }
                         Write-Log "TTC PriceTable updated to version $SRV_VERSION." "Information"
+                     
                         if (!$SILENT) { Write-Host " $ESC[92m[+] TTC Data Successfully Updated.$ESC[0m`n" }
                     } else {
                         if ($notifTTC -eq "Data Uploaded") { $notifTTC = "Uploaded, but DL Failed" } else { $notifTTC = "Download Error" }
+                      
                         Write-Log "TTC Data download blocked by the server." "Error"
                         if (!$SILENT) { Write-Host " $ESC[31m[!] Error: TTC Data download blocked by the server.$ESC[0m`n" }
                     }
                 }
             } else {
+  
                 $global:TTC_LOC_VERSION = $LOCAL_VERSION
                 $CONFIG_CHANGED = $true
                 if (!$SILENT) {
@@ -788,6 +901,7 @@ while ($true) {
         $jsonStr = $jsonStr.Replace('{"folder_name"', "`n{`"folder_name`"")
         $lines = $jsonStr -split "`n"
         foreach ($line in $lines) {
+   
             if ($line -match '"folder_name"') {
                 $addonBlocks += $line
             }
@@ -816,6 +930,7 @@ while ($true) {
                 $SRV_VER = $matches[1]
             }
 
+  
             if (!$FNAME) { continue }
 
             $HAS_THIS_EH = Check-Addon-Enabled $FNAME
@@ -843,6 +958,7 @@ while ($true) {
             if (!$SILENT) {
                 Write-Host " $ESC[33mChecking server for $FNAME.zip...$ESC[0m"
                 Write-Host "`t$ESC[90m${PREFIX}_Server_Version= ${V_COL}$SRV_VER$ESC[0m"
+      
                 Write-Host "`t$ESC[90m${PREFIX}_Local_Version= ${V_COL}$LOC_VER$ESC[0m"
             }
 
@@ -850,10 +966,12 @@ while ($true) {
             if ($SV_NAME -and $UP_EP) {
                 if (Test-Path "$SAVED_VAR_DIR\$SV_NAME") {
                     $UP_SNAP = "$TARGET_DIR\lttc_eh_$($SV_NAME.ToLower().Replace('.lua',''))_snapshot.lua"
+      
                     $EH_LOCAL_CHANGED = $true
                     if (Test-Path $UP_SNAP) {
                         $h1 = (Get-FileHash "$SAVED_VAR_DIR\$SV_NAME" -Algorithm MD5).Hash
                         $h2 = (Get-FileHash $UP_SNAP -Algorithm MD5).Hash
+   
                         if ($h1 -eq $h2) { $EH_LOCAL_CHANGED = $false }
                     }
 
@@ -861,10 +979,12 @@ while ($true) {
                         if (!$SILENT) { Write-Host " $ESC[90mNo changes detected in $SV_NAME. $ESC[35mSkipping upload.$ESC[0m" }
                     } else {
                         if (!$SILENT) { Write-Host " $ESC[36mUploading local scan data ($SV_NAME)...$ESC[0m" }
-                        curl.exe -s -A "ESOHubClient/1.0.9" -F "file=@$SAVED_VAR_DIR\$SV_NAME" "https://data.eso-hub.com$UP_EP?user_token=" | Out-Null
+                        curl.exe -s -A "ESOHubClient/1.0.9" -F "file=@$SAVED_VAR_DIR\$SV_NAME" "https://data.eso-hub.com$UP_EP?user_token=$EH_USER_TOKEN" | Out-Null
+     
                         Copy-Item -Path "$SAVED_VAR_DIR\$SV_NAME" -Destination $UP_SNAP -Force
                         $ehUploadCount++
                         Write-Log "ESO-Hub local data ($SV_NAME) uploaded to server." "Information"
+                    
                         if (!$SILENT) { Write-Host " $ESC[92m[+] Upload finished ($SV_NAME).$ESC[0m" }
                     }
                 } else {
@@ -879,26 +999,33 @@ while ($true) {
                 } else {
                     if ($EH_TIME_DIFF -lt 3600 -and $EH_TIME_DIFF -ge 0) {
                         $WAIT_MINS = [math]::Floor((3600 - $EH_TIME_DIFF) / 60)
+              
                         if (!$SILENT) { Write-Host " $ESC[33mNew $FNAME.zip available, but download is on cooldown for $WAIT_MINS more minutes. $ESC[35mSkipping.$ESC[0m" }
                     } else {
                         if (!$SILENT) { Write-Host " $ESC[36mDownloading: $FNAME.zip$ESC[0m" }
                         $TEMP_DIR_USED = $true
+                    
                         $zipPath = "$TEMP_DIR\EH_$ID_NUM.zip"
                         curl.exe -f -# -L -A "ESOHubClient/1.0.9" -o $zipPath "$DL_URL"
                         
                         if (Test-Path $zipPath) {
+           
                             Expand-Archive -Path $zipPath -DestinationPath "$TEMP_DIR\ESOHub_Extracted" -Force
                             Copy-Item -Path "$TEMP_DIR\ESOHub_Extracted\*" -Destination "$ADDON_DIR\" -Recurse -Force
                             
+                
                             Set-Variable -Name $VAR_LOC_NAME -Value $SRV_VER -Scope Global
                             $CONFIG_CHANGED = $true
                             $EH_DOWNLOAD_OCCURRED = $true
+                      
                             $ehUpdateCount++
                             Write-Log "ESO-Hub Addon ($FNAME) updated to version $SRV_VER." "Information"
                             if (!$SILENT) { Write-Host " $ESC[92m[+] $FNAME.zip updated successfully.$ESC[0m" }
+                     
                         } else {
                             Write-Log "ESO-Hub Addon ($FNAME) download corrupted." "Error"
                             if (!$SILENT) { Write-Host " $ESC[31m[!] Error: $FNAME.zip download corrupted.$ESC[0m" }
+                       
                         }
                     }
                 }
@@ -926,16 +1053,19 @@ while ($true) {
         
         if (Test-Path $HM_DIR) {
             $HM_CHANGED = $true
+          
             $LOCAL_HM_STATUS = "Out-of-Sync"
             $SRV_HM_STATUS = "Latest"
             
             if (Test-Path $MAIN_HM_FILE) {
                 if (Test-Path $HM_SNAP) {
                     $h1 = (Get-FileHash $MAIN_HM_FILE -Algorithm MD5).Hash
+           
                     $h2 = (Get-FileHash $HM_SNAP -Algorithm MD5).Hash
                     if ($h1 -eq $h2) { 
                         $HM_CHANGED = $false 
                         $LOCAL_HM_STATUS = "Synced"
+        
                     }
                 }
             }
@@ -952,6 +1082,7 @@ while ($true) {
                 Write-Host "`t$ESC[90mLocal_Data_Status= ${V_COL}$LOCAL_HM_STATUS$ESC[0m"
             }
 
+        
             if (!$HM_CHANGED) {
                 if (!$SILENT) {
                     Write-Host " $ESC[90mNo changes detected. $ESC[92mHarvestMap.lua is up-to-date. $ESC[35mSkipping process.$ESC[0m`n"
@@ -969,10 +1100,12 @@ while ($true) {
                 } else {
                     Send-Live-Update "HarvestMap: Downloading new zone data..."
                     if (Test-Path $MAIN_HM_FILE) { Copy-Item -Path $MAIN_HM_FILE -Destination $HM_SNAP -Force }
+       
                     if (!(Test-Path $SAVED_VAR_DIR)) { New-Item -ItemType Directory -Force -Path $SAVED_VAR_DIR | Out-Null }
                     
                     $hmFailed = $false
                     foreach ($zone in @("AD", "EP", "DC", "DLC", "NF")) {
+     
                         $svfn1 = "$SAVED_VAR_DIR\HarvestMap${zone}.lua"
                         $svfn2 = "${svfn1}~"
                         
@@ -980,37 +1113,46 @@ while ($true) {
                         else {
                             $name = "Harvest${zone}_SavedVars"
                             if (Test-Path $EMPTY_FILE) {
+         
                                 $cnt = Get-Content $EMPTY_FILE -Raw
                                 Set-Content -Path $svfn2 -Value "$name$cnt" -NoNewline
                             } else {
+      
                                 Set-Content -Path $svfn2 -Value "$name={[`"data`"]={}}" -NoNewline
                             }
                         }
-                        
+                 
+        
                         $modDir = "$HM_DIR\Modules\HarvestMap${zone}"
                         if (!(Test-Path $modDir)) { New-Item -ItemType Directory -Force -Path $modDir | Out-Null }
                         if (!$SILENT) { Write-Host " $ESC[36mDownloading database chunk to:$ESC[0m $modDir\HarvestMap${zone}.lua" }
                         
                         try {
+                
                             Invoke-WebRequest -Uri "http://harvestmap.binaryvector.net:8081" -Method Post -InFile $svfn2 -OutFile "$modDir\HarvestMap${zone}.lua" -UserAgent $HM_USER_AGENT -ErrorAction Stop
                         } catch {
                             if (!$SILENT) { Write-Host "  $ESC[33m[-] Primary UA blocked. Retrying with fallback UA...$ESC[0m" }
+        
                             try {
                                 Invoke-WebRequest -Uri "http://harvestmap.binaryvector.net:8081" -Method Post -InFile $svfn2 -OutFile "$modDir\HarvestMap${zone}.lua" -UserAgent $RAND_UA -ErrorAction Stop
                             } catch {
+     
                                 $hmFailed = $true
                             }
                         }
+                   
                     }
                     
                     if (!$hmFailed) {
                         $global:HM_LAST_DOWNLOAD = $CURRENT_TIME
                         $CONFIG_CHANGED = $true
+     
                         $notifHM = "Updated successfully"
                         Write-Log "HarvestMap data chunks downloaded successfully." "Information"
                         if (!$SILENT) { Write-Host "`n $ESC[92m[+] HarvestMap Data Successfully Updated.$ESC[0m`n" }
                     } else {
                         $notifHM = "Error (Server Blocked)"
+                
                         Write-Log "HarvestMap Data download blocked by server." "Error"
                     }
                 }
@@ -1018,6 +1160,7 @@ while ($true) {
         } else {
             $notifHM = "Not Found (Skipped)"
             if (!$SILENT) {
+            
                 Write-Host "$ESC[1m$ESC[97m [4/4] Updating HarvestMap Data (SKIPPED) $ESC[0m"
                 Write-Host " $ESC[31m[!] HarvestMapData folder not found in: $ADDON_DIR. $ESC[35mSkipping...$ESC[0m`n"
             }
@@ -1048,6 +1191,7 @@ while ($true) {
             $toast = [Windows.UI.Notifications.ToastNotification]::new($xmlDocument)
             [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show($toast)
         } catch {}
+  
     }
 
     if ($AUTO_MODE -eq "1") { 
@@ -1070,9 +1214,11 @@ while ($true) {
                     if ($global:IS_TASK -and $script:trayIcon) { $script:trayIcon.Visible = $false }
                     try {
                         $parent = Get-CimInstance Win32_Process -Filter "ProcessId = $PID"
+                    
                         if ($parent.ParentProcessId) {
                             $parentProc = Get-Process -Id $parent.ParentProcessId -ErrorAction SilentlyContinue
                             if ($parentProc.Name -eq "cmd") { Stop-Process -Id $parentProc.Id -Force }
+                       
                         }
                     } catch {}
                     Stop-Process -Id $PID -Force
@@ -1085,17 +1231,21 @@ while ($true) {
                 Write-Host -NoNewline "`r $ESC[1;97;101m Countdown: ${min}:$($sec.ToString('D2')) $ESC[0m$ESC[0K"
                 if ($i % 5 -eq 0) {
                     if (!(Get-Process "eso64", "zos", "eso", "Bethesda.net_Launcher" -ErrorAction SilentlyContinue)) {
+                        
                         Write-Host "`n`n $ESC[33mGame closed. Terminating updater...$ESC[0m"
                         Write-Log "WTTC Updater Terminated (Game Process closed)." "Information"
                         Start-Sleep -Seconds 2
                         if ($global:IS_TASK -and $script:trayIcon) { $script:trayIcon.Visible = $false }
                         try {
+                 
                             $parent = Get-CimInstance Win32_Process -Filter "ProcessId = $PID"
                             if ($parent.ParentProcessId) {
                                 $parentProc = Get-Process -Id $parent.ParentProcessId -ErrorAction SilentlyContinue
+              
                                 if ($parentProc.Name -eq "cmd") { Stop-Process -Id $parentProc.Id -Force }
                             }
                         } catch {}
+                   
                         Stop-Process -Id $PID -Force
                     }
                 }
@@ -1104,6 +1254,7 @@ while ($true) {
         }
     } else {
         if ($SILENT) {
+   
             Wait-WithEvents 3600
         } else {
             Write-Host " $ESC[1;97;101m Restarting Sequence in 60 minutes... (Standalone Mode) $ESC[0m`n"
