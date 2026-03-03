@@ -8,7 +8,7 @@
 # ========================================================================================
 # DISCLAIMER & CREDITS
 # Icon Source: Official favicon from Tamriel Trade Centre (https://tamrieltradecentre.com)
-# Data Sources: Tamriel Trade Centre, HarvestMap, and ESO-Hub.
+# Data Sources: Tamriel Trade Centre, HarvestMap, UESP, and ESO-Hub.
 # 
 # This script is a utility to automate local data updates. It is not 
 # affiliated with, nor does it claim ownership of, the aforementioned addons. 
@@ -20,7 +20,7 @@ unset LD_PRELOAD
 unset LD_LIBRARY_PATH
 unset STEAM_LD_PRELOAD
 
-APP_VERSION="4.4"
+APP_VERSION="4.7"
 OS_TYPE=$(uname -s)
 TARGET_DIR="$HOME/Documents"
 
@@ -53,7 +53,7 @@ for snap in "$TARGET_DIR"/*_snapshot.lua; do
     [ -f "$snap" ] && mv "$snap" "$SNAP_DIR/" 2>/dev/null
 done
 
-# Clean old floating temporary files
+# Clean old temporary files
 rm -f "$TARGET_DIR"/*.tmp "$TARGET_DIR"/*.out 2>/dev/null
 
 # Update Internal Paths
@@ -254,6 +254,9 @@ HM_LAST_CHECK="${HM_LAST_CHECK:-0}"
 LOG_MODE="${LOG_MODE:-simple}"
 EH_USER_TOKEN="${EH_USER_TOKEN:-}"
 TARGET_RUN_TIME="${TARGET_RUN_TIME:-0}"
+SKIP_DL_TTC="${SKIP_DL_TTC:-false}"
+SKIP_DL_HM="${SKIP_DL_HM:-false}"
+SKIP_DL_EH="${SKIP_DL_EH:-false}"
 
 save_config() {
     cat <<EOF > "$CONFIG_FILE"
@@ -280,7 +283,93 @@ HM_LAST_DOWNLOAD="$HM_LAST_DOWNLOAD"
 HM_LAST_CHECK="$HM_LAST_CHECK"
 EH_USER_TOKEN="$EH_USER_TOKEN"
 TARGET_RUN_TIME="$TARGET_RUN_TIME"
+SKIP_DL_TTC=$SKIP_DL_TTC
+SKIP_DL_HM=$SKIP_DL_HM
+SKIP_DL_EH=$SKIP_DL_EH
 EOF
+}
+
+ensure_missing_addon() {
+    local a_name="$1"
+    local a_id="$2"
+    local skip_var="$3"
+    
+    # Check if user declined this addon previously
+    if [ "${!skip_var}" = true ]; then
+        return 1
+    fi
+    
+    if [ ! -d "$ADDON_DIR/$a_name" ]; then
+        local ans="y"
+        # Check if we are on Steamdeck
+        if [ ! -f "/etc/os-release" ] || ! grep -qi "steamos" "/etc/os-release"; then
+            echo -ne "\n \e[33m[?] $a_name is missing. Do you want to download it? (y/N):\e[0m "
+            read -r ans < /dev/tty
+        fi
+        
+        if [[ "$ans" =~ ^[Yy]$ ]]; then
+                    ui_echo " \e[36mDownloading $a_name from ESOUI...\e[0m"
+                    local api_resp=$(curl -s "https://api.mmoui.com/v3/game/ESO/filedetails/${a_id}.json")
+                    local dl_url=$(echo "$api_resp" | grep -o '"downloadUrl":"[^"]*"' | cut -d'"' -f4 | sed 's/\\//g' | tr -d '\r\n\t ')
+                    local addon_version=$(echo "$api_resp" | grep -o '"version":"[^"]*"' | cut -d'"' -f4 | tr -d '\r\n\t ')
+                    
+                    [ -z "$dl_url" ] && dl_url="https://cdn.esoui.com/downloads/file${a_id}/"
+                    
+                    if curl -s -f -m 30 -L -A "Mozilla/5.0" -o "$TEMP_DIR_ROOT/${a_name}.zip" "$dl_url" </dev/null; then
+                        unzip -q -o "$TEMP_DIR_ROOT/${a_name}.zip" -d "$ADDON_DIR/" > /dev/null 2>&1
+                        rm -f "$TEMP_DIR_ROOT/${a_name}.zip"
+                        
+                        # Save Local Version & Reset TTC Cooldown
+                        if [ "$a_name" = "TamrielTradeCentre" ]; then
+                            rm -f "$TEMP_DIR_ROOT/ttc_last_dl.txt" 2>/dev/null
+                            if [ -n "$addon_version" ]; then
+                                TTC_LOC_VERSION="$addon_version"
+                                CONFIG_CHANGED=true
+                            fi
+                        fi
+                        
+                        # Sync LibEsoHubPrices timestamp
+                        if [ "$a_name" = "LibEsoHubPrices" ]; then
+                            local eh_api=$(curl -s -X POST -H "User-Agent: ESOHubClient/1.0.9" -d "user_token=&client_system=$SYS_ID&client_version=1.0.9&lang=en" "https://data.eso-hub.com/v1/api/get-addon-versions" 2>/dev/null)
+                            local srv_ver=$(echo "$eh_api" | sed 's/{"folder_name"/\n{"folder_name"/g' | grep '"folder_name":"LibEsoHubPrices"' | grep -oE '"version":\{[^}]*\}' | grep -oE '"string":"[^"]+"' | cut -d'"' -f4 | tr -d '\r\n\t ')
+                            if [ -n "$srv_ver" ]; then
+                                EH_LOC_7="$srv_ver"
+                                CONFIG_CHANGED=true
+                            fi
+                        fi
+                        
+                        ui_echo " \e[92m[+] $a_name installed successfully.\e[0m"
+                
+                # Enable in AddOnSettings.txt for all characters
+                local settings_file="$ADDON_DIR/../AddOnSettings.txt"
+                if [ -f "$settings_file" ]; then
+                    if [ "$a_name" = "EsoTradingHub" ]; then
+                        sed -i -e "s/^EsoTradingHub 0/EsoTradingHub 1/g" -e "s/^EsoHubScanner 0/EsoHubScanner 1/g" -e "s/^LibEsoHubPrices 0/LibEsoHubPrices 1/g" "$settings_file" 2>/dev/null
+                        grep -q "^EsoTradingHub " "$settings_file" || echo "EsoTradingHub 1" >> "$settings_file"
+                        grep -q "^EsoHubScanner " "$settings_file" || echo "EsoHubScanner 1" >> "$settings_file"
+                        grep -q "^LibEsoHubPrices " "$settings_file" || echo "LibEsoHubPrices 1" >> "$settings_file"
+                    elif [ "$a_name" = "HarvestMap" ] || [ "$a_name" = "HarvestMapData" ]; then
+                        sed -i -e "s/^HarvestMap 0/HarvestMap 1/g" -e "s/^HarvestMapData 0/HarvestMapData 1/g" "$settings_file" 2>/dev/null
+                        grep -q "^HarvestMap " "$settings_file" || echo "HarvestMap 1" >> "$settings_file"
+                        grep -q "^HarvestMapData " "$settings_file" || echo "HarvestMapData 1" >> "$settings_file"
+                    else
+                        sed -i -e "s/^$a_name 0/$a_name 1/g" "$settings_file" 2>/dev/null
+                        grep -q "^$a_name " "$settings_file" || echo "$a_name 1" >> "$settings_file"
+                    fi
+                fi
+                return 0
+            else
+                ui_echo " \e[31m[-] Download failed for $a_name.\e[0m"
+                return 1
+            fi
+        else
+            ui_echo " \e[90mUser Declined download of $a_name. Will not ask again.\e[0m"
+            printf -v "$skip_var" "true"
+            save_config
+            return 1
+        fi
+    fi
+    return 0
 }
 
 if [ "$#" -gt 0 ]; then HAS_ARGS=true; fi
@@ -698,8 +787,121 @@ ui_echo() {
 }
 
 master_kiosk_logic='
-k_dict["84"] = "Lillandril - Summerset|1455"
-k_dict["Rinedel"] = "Lillandril - Summerset|1455"
+# TTC Kiosk Location IDs
+k_dict["0"] = "Belkarth"
+k_dict["1"] = "Belkarth Outlaws Refuge"
+k_dict["2"] = "The Hollow City"
+k_dict["3"] = "Haj Uxith"
+k_dict["4"] = "Court of Contempt"
+k_dict["5"] = "Rawl\047kha"
+k_dict["6"] = "Rawl\047kha Outlaws Refuge"
+k_dict["7"] = "Vinedusk"
+k_dict["8"] = "Dune"
+k_dict["9"] = "Baandari Trading Post"
+k_dict["10"] = "Dra\047bul"
+k_dict["11"] = "Valeguard"
+k_dict["12"] = "Velyn Harbor Outlaws Refuge"
+k_dict["13"] = "Marbruk"
+k_dict["14"] = "Marbruk Outlaws Refuge"
+k_dict["15"] = "Verrant Morass"
+k_dict["16"] = "Greenheart"
+k_dict["17"] = "Elden Root"
+k_dict["18"] = "Elden Root Outlaws Refuge"
+k_dict["19"] = "Cormount"
+k_dict["20"] = "Southpoint"
+k_dict["21"] = "Skywatch"
+k_dict["22"] = "Firsthold"
+k_dict["23"] = "Vulkhel Guard"
+k_dict["24"] = "Vulkhel Guard Outlaws Refuge"
+k_dict["25"] = "Mistral"
+k_dict["26"] = "Evermore"
+k_dict["27"] = "Evermore Outlaws Refuge"
+k_dict["28"] = "Bangkorai Pass"
+k_dict["29"] = "Hallin\047s Stand"
+k_dict["30"] = "Sentinel"
+k_dict["31"] = "Sentinel Outlaws Refuge"
+k_dict["32"] = "Morwha\047s Bounty"
+k_dict["33"] = "Bergama"
+k_dict["34"] = "Shornhelm"
+k_dict["35"] = "Shornhelm Outlaws Refuge"
+k_dict["36"] = "Hoarfrost Downs"
+k_dict["37"] = "Oldgate"
+k_dict["38"] = "Wayrest"
+k_dict["39"] = "Wayrest Outlaws Refuge"
+k_dict["40"] = "Firebrand Keep"
+k_dict["41"] = "Koeglin Village"
+k_dict["42"] = "Daggerfall"
+k_dict["43"] = "Daggerfall Outlaws Refuge"
+k_dict["44"] = "Lion Guard Redoubt"
+k_dict["45"] = "Wyrd Tree"
+k_dict["46"] = "Stonetooth"
+k_dict["47"] = "Port Hunding"
+k_dict["48"] = "Riften"
+k_dict["49"] = "Riften Outlaws Refuge"
+k_dict["50"] = "Nimalten"
+k_dict["51"] = "Fallowstone Hall"
+k_dict["52"] = "Windhelm"
+k_dict["53"] = "Windhelm Outlaws Refuge"
+k_dict["54"] = "Voljar Meadery"
+k_dict["55"] = "Fort Amol"
+k_dict["56"] = "Stormhold"
+k_dict["57"] = "Stormhold Outlaws Refuge"
+k_dict["58"] = "Venomous Fens"
+k_dict["59"] = "Hissmir"
+k_dict["60"] = "Mournhold"
+k_dict["61"] = "Mournhold Outlaws Refuge"
+k_dict["62"] = "Tal\047Deic Grounds"
+k_dict["63"] = "Muth Gnaar Hills"
+k_dict["64"] = "Ebonheart"
+k_dict["65"] = "Kragenmoor"
+k_dict["66"] = "Davon\047s Watch"
+k_dict["67"] = "Davon\047s Watch Outlaws Refuge"
+k_dict["68"] = "Dhalmora"
+k_dict["69"] = "Bleakrock"
+k_dict["70"] = "Orsinium"
+k_dict["71"] = "Orsinium Outlaws Refuge"
+k_dict["72"] = "Morkul Stronghold"
+k_dict["73"] = "Thieves Den"
+k_dict["74"] = "Abah\047s Landing"
+k_dict["75"] = "Anvil"
+k_dict["76"] = "Kvatch"
+k_dict["77"] = "Anvil Outlaws Refuge"
+k_dict["78"] = "Vive City"
+k_dict["79"] = "Vive City Outlaws Refuge"
+k_dict["80"] = "Sadrith Mora"
+k_dict["81"] = "Balmora"
+k_dict["82"] = "Brass Fortress"
+k_dict["83"] = "Brass Fortress Outlaws Refuge"
+k_dict["84"] = "Lillandril"
+k_dict["85"] = "Shimmerene"
+k_dict["86"] = "Alinor"
+k_dict["87"] = "Alinor Outlaws Refuge"
+k_dict["88"] = "Lilmoth"
+k_dict["89"] = "Lilmoth Outlaws Refuge"
+k_dict["90"] = "Rimmen"
+k_dict["91"] = "Rimmen Outlaws Refuge"
+k_dict["92"] = "Senchal"
+k_dict["93"] = "Senchal Outlaws Refuge"
+k_dict["94"] = "Solitude"
+k_dict["95"] = "Solitude Outlaws Refuge"
+k_dict["96"] = "Markarth"
+k_dict["97"] = "Markarth Outlaws Refuge"
+k_dict["98"] = "Leyawiin"
+k_dict["99"] = "Leyawiin Outlaws Refuge"
+k_dict["100"] = "Fargrave"
+k_dict["101"] = "Fargrave Outlaws Refuge"
+k_dict["102"] = "Gonfalon Bay"
+k_dict["103"] = "Gonfalon Bay Outlaws Refuge"
+k_dict["104"] = "Vastyr"
+k_dict["105"] = "Vastyr Outlaws Refuge"
+k_dict["106"] = "Necrom"
+k_dict["107"] = "Necrom Outlaws Refuge"
+k_dict["108"] = "Skingrad"
+k_dict["109"] = "Skingrad Outlaws Refuge"
+k_dict["110"] = "Sunport"
+k_dict["111"] = "Sunport Outlaws Refuge"
+
+# ESO-HUB Trader Names & Map Locations
 k_dict["Lejesha"] = "Bergama Wayshrine - Alik\047r Desert|104"
 k_dict["Manidah"] = "Morwha\047s Bounty Wayshrine - Alik\047r Desert|104"
 k_dict["Laknar"] = "Sentinel - Alik\047r Desert|104"
@@ -708,11 +910,11 @@ k_dict["Uurwaerion"] = "Sentinel - Alik\047r Desert|104"
 k_dict["Vinder Hlaran"] = "Sentinel - Alik\047r Desert|104"
 k_dict["Yat"] = "Sentinel - Alik\047r Desert|104"
 k_dict["Panersewen"] = "Firsthold Wayshrine - Auridon|381"
-k_dict["Cerweriell"] = "Skywatch - Auridon|381"
-k_dict["Ferzhela"] = "Skywatch - Auridon|381"
-k_dict["Guzg"] = "Skywatch - Auridon|381"
-k_dict["Lanirsare"] = "Skywatch - Auridon|381"
-k_dict["Renzaiq"] = "Skywatch - Auridon|381"
+k_dict["Cerweriell"] = "Skywatch - Auridon|545"
+k_dict["Ferzhela"] = "Skywatch - Auridon|545"
+k_dict["Guzg"] = "Skywatch - Auridon|545"
+k_dict["Lanirsare"] = "Skywatch - Auridon|545"
+k_dict["Renzaiq"] = "Skywatch - Auridon|545"
 k_dict["Carillda"] = "Vulkhel Guard - Auridon|381"
 k_dict["Galam Seleth"] = "Dhalmora - Bal Foyen|281"
 k_dict["Malirzzaka"] = "Bangkorai Pass Wayshrine - Bangkorai|92"
@@ -737,7 +939,7 @@ k_dict["Noveni Adrano"] = "Brass Fortress - Clockwork City|1643"
 k_dict["Valowende"] = "Brass Fortress - Clockwork City|1643"
 k_dict["Shogarz"] = "Brass Fortress - Clockwork City|1643"
 k_dict["Harzdak"] = "Court of Contempt Wayshrine - Coldharbour|345"
-k_dict["Shuliish"] = "Haj Uxith Wayshrine - Coldharbour|345"
+k_dict["Shuliish"] = "Haj Uxith Wayshrine - Coldharbour|255"
 k_dict["Nistyniel"] = "The Hollow City - Coldharbour|345"
 k_dict["Ramzasa"] = "The Hollow City - Coldharbour|345"
 k_dict["Balver Sarvani"] = "The Hollow City - Coldharbour|345"
@@ -826,7 +1028,7 @@ k_dict["Murgrud"] = "Baandari Trading Post - Malabal Tor|58"
 k_dict["Jalaima"] = "Baandari Trading Post - Malabal Tor|58"
 k_dict["Nindenel"] = "Baandari Trading Post - Malabal Tor|58"
 k_dict["Teromawen"] = "Baandari Trading Post - Malabal Tor|58"
-k_dict["Ulyn Marys"] = "Dra\047bul Wayshrine - Malabal Tor|58"
+k_dict["Ulyn Marys"] = "Dra\047bul Wayshrine - Malabal Tor|22"
 k_dict["Kharg"] = "Valeguard Wayshrine - Malabal Tor|58"
 k_dict["Aki-Osheeja"] = "Lilmoth - Murkmire|1533"
 k_dict["Faelemar"] = "Lilmoth - Murkmire|1533"
@@ -834,12 +1036,12 @@ k_dict["Ordasha"] = "Lilmoth - Murkmire|1533"
 k_dict["Xokomar"] = "Lilmoth - Murkmire|1533"
 k_dict["Mahadal at-Bergama"] = "Lilmoth - Murkmire|1533"
 k_dict["Thaloril"] = "Lilmoth - Murkmire|1533"
-k_dict["Maelanrith"] = "Rimmen - Northern Elsweyr|1664"
-k_dict["Artura Pamarc"] = "Rimmen - Northern Elsweyr|1664"
-k_dict["Razzamin"] = "Rimmen - Northern Elsweyr|1664"
-k_dict["Nirshala"] = "Rimmen - Northern Elsweyr|1664"
-k_dict["Adiblargo"] = "Rimmen - Northern Elsweyr|1664"
-k_dict["Fortis Asina"] = "Rimmen - Northern Elsweyr|1664"
+k_dict["Maelanrith"] = "Rimmen - Northern Elsweyr|1576"
+k_dict["Artura Pamarc"] = "Rimmen - Northern Elsweyr|1576"
+k_dict["Razzamin"] = "Rimmen - Northern Elsweyr|1576"
+k_dict["Nirshala"] = "Rimmen - Northern Elsweyr|1576"
+k_dict["Adiblargo"] = "Rimmen - Northern Elsweyr|1576"
+k_dict["Fortis Asina"] = "Rimmen - Northern Elsweyr|1576"
 k_dict["Uzarrur"] = "Dune - Reaper\047s March|382"
 k_dict["Muheh"] = "Rawl\047kha - Reaper\047s March|382"
 k_dict["Shiniraer"] = "Rawl\047kha - Reaper\047s March|382"
@@ -902,6 +1104,7 @@ k_dict["Nowajan"] = "Lillandril - Summerset|1455"
 k_dict["Quelilmor"] = "Shimmerene - Summerset|1455"
 k_dict["Shargalash"] = "Shimmerene - Summerset|1455"
 k_dict["Varandia"] = "Shimmerene - Summerset|1455"
+k_dict["Rinedel"] = "Lillandril - Summerset|1455"
 k_dict["Grudogg"] = "Necrom - Telvanni Peninsula|2394"
 k_dict["Tuls Madryon"] = "Necrom - Telvanni Peninsula|2394"
 k_dict["Alvura Thenim"] = "Necrom - Telvanni Peninsula|2394"
@@ -916,6 +1119,49 @@ k_dict["Virwen"] = "Abah\047s Landing - Hew\047s Bane|1353"
 k_dict["Begok"] = "Rimmen Outlaws Refuge - Northern Elsweyr|1664"
 k_dict["Laytiva Sendris"] = "Senchal Outlaws Refuge - Southern Elsweyr|1693"
 k_dict["Bodfira"] = "Markarth - The Reach|1855"
+k_dict["Atazha"] = "Vivec City - Vvardenfell|1287"
+k_dict["Jena Calvus"] = "Vivec City - Vvardenfell|1287"
+k_dict["Lorthodaer"] = "Vivec City - Vvardenfell|1287"
+k_dict["Mauhoth"] = "Vivec City - Vvardenfell|1287"
+k_dict["Rinami"] = "Vivec City - Vvardenfell|1287"
+k_dict["Sebastian Brutya"] = "Vivec City - Vvardenfell|1287"
+k_dict["Relieves-Burdens"] = "Vivec City Outlaws Refuge - Vvardenfell|1287"
+k_dict["Narril"] = "Balmora - Vvardenfell|1290"
+k_dict["Ruxultav"] = "Sadrith Mora - Vvardenfell|1288"
+k_dict["Felayn Uvaram"] = "Sadrith Mora - Vvardenfell|1288"
+k_dict["Eralian"] = "Riften - The Rift|103"
+k_dict["Arnyeana"] = "Riften - The Rift|103"
+k_dict["Jeelus-Lei"] = "Riften - The Rift|103"
+k_dict["Llether Nilem"] = "Riften - The Rift|103"
+k_dict["Atheval"] = "Nimalten - The Rift|103"
+k_dict["Borgrara"] = "Morkul Stronghold - Wrothgar|684"
+k_dict["Henriette Panoit"] = "Morkul Stronghold - Wrothgar|684"
+k_dict["Nagrul gro-Stugbaz"] = "Morkul Stronghold - Wrothgar|684"
+k_dict["Oorgurn"] = "Morkul Stronghold - Wrothgar|684"
+k_dict["Jee-Ma"] = "Orsinium - Wrothgar|684"
+k_dict["Terorne"] = "Orsinium - Wrothgar|684"
+k_dict["Narkhukulg"] = "Orsinium Outlaws Refuge - Wrothgar|684"
+k_dict["Adzi-Dool"] = "Skingrad - West Weald|2542"
+k_dict["Catro Catius"] = "Skingrad - West Weald|2542"
+k_dict["Curinwe"] = "Skingrad - West Weald|2542"
+k_dict["Ildare Berel"] = "Skingrad - West Weald|2542"
+k_dict["Lucius Lento"] = "Skingrad - West Weald|2542"
+k_dict["Otho Tatius"] = "Skingrad - West Weald|2542"
+
+# Merge TTC Kiosk IDs with ESO-Hub Map Strings
+for (k in k_dict) {
+    if (k ~ /^[0-9]+$/) {
+        ttc_name = k_dict[k]
+        for (t in k_dict) {
+            if (t !~ /^[0-9]+$/) {
+                if (index(k_dict[t], ttc_name " - ") == 1 || index(k_dict[t], ttc_name " Wayshrine") == 1 || k_dict[t] == ttc_name) {
+                    k_dict[k] = k_dict[t]
+                    break
+                }
+            }
+        }
+    }
+}
 '
 
 browse_database() {
@@ -927,6 +1173,7 @@ browse_database() {
     
     if [ ! -f "$DB_DIR/LTTC_History.db" ]; then
         echo -e "\033[31m[!] No history database found. Wait for the script to extract data first.\033[0m\n"
+        echo -e "\033[31m[!] (or go visit a guild store in-game and press scan then /reloadui)\033[0m\n"
         echo -ne "\033[33mPress Enter to return...\033[0m "
         read dummy_var
         return
@@ -938,17 +1185,16 @@ browse_database() {
         echo -e " 2) Top 10 Most Selling Items (By Volume)"
         echo -e " 3) Top 10 Highest Grossing Items (By Total Gold)"
         echo -e " 4) Suggested Price Calculator (Outlier Elimination)"
-        echo -e " 5) Show Previous Extraction Log"
+        echo -e " 5) View Previous Extraction History (Paginated & Sorted)"
         echo -e " 6) Exit Browser & Resume Updater"
-        echo -e " 7) Force Recalculate Database Colors"
-        echo -e " 8) Force Fetch Unknown Database Names"
-        echo -ne "\033[33mChoice [1-6]:\033[0m "
+        echo -ne "\033[33mChoice [1-8]:\033[0m "
         read b_opt
         
         case $b_opt in
             1)
                 echo -ne "\033[33mEnter search term (leave empty for ALL data):\033[0m "
                 read s_term
+                
                 echo -e "\n\033[33mSort By:\033[0m"
                 echo " 1) Date (Newest First)"
                 echo " 2) Date (Oldest First)"
@@ -958,124 +1204,124 @@ browse_database() {
                 echo -ne "\033[33mChoice [1-5]:\033[0m "
                 read sort_opt
                 
-                case $sort_opt in
-                    2) sort_cmd=(sort -t '|' -k2,2n) ;;
-                    3) sort_cmd=(sort -t '|' -k4,4nr) ;;
-                    4) sort_cmd=(sort -t '|' -k4,4n) ;;
-                    5) sort_cmd=(sort -t '|' -k7,7 -f) ;;
-                    1|*) sort_cmd=(sort -t '|' -k2,2nr) ;;
-                esac
-
+                view_tmp="$TEMP_DIR_ROOT/lttc_search_view.tmp"
+                sort_tmp="$TEMP_DIR_ROOT/lttc_search_sort.tmp"
+                
                 echo -e "\n\033[36mProcessing data...\033[0m"
                 
+                # Filter by search term
                 awk -F'|' -v term="$(echo "$s_term" | awk '{print tolower($0)}')" '
-                    BEGIN { '"$master_kiosk_logic"' }
-                    $1=="HISTORY" {
-                        kiosk = $11
-                        if (kiosk != "" && kiosk != "0" && k_dict[kiosk] != "") kiosk = k_dict[kiosk]
-                        search_str = tolower($0 "|" kiosk)
-                        if (term == "" || search_str ~ term) {
-                            print $0
-                        }
+                BEGIN { '"$master_kiosk_logic"' }
+                $1 == "HISTORY" {
+                    kiosk = $11
+                    name = $7
+                    guild = $10
+                    
+                    # Hide Unknown Data
+                    if (name ~ /^Unknown Item/ || guild == "Unknown Guild" || guild == "Guilds" || guild == "") {
+                        next
                     }
-                ' "$DB_DIR/LTTC_History.db" > "$TEMP_DIR_ROOT/LTTC_Filter.tmp"
-
-                "${sort_cmd[@]}" "$TEMP_DIR_ROOT/LTTC_Filter.tmp" > "$TEMP_DIR_ROOT/LTTC_Sorted.tmp"
-
-                awk -F'|' '
-                    BEGIN { '"$master_kiosk_logic"' }
-                    {
-                        date_cmd = "date -d @" $2 " \"+%Y-%m-%d %H:%M:%S\" 2>/dev/null"
-                        if (system("test $(uname -s) = Darwin") == 0) {
-                            date_cmd = "date -r " $2 " \"+%Y-%m-%d %H:%M:%S\" 2>/dev/null"
-                        }
-                        date_cmd | getline d_str; close(date_cmd)
-                        
-                        now_cmd = "date +%s"; now_cmd | getline now_ts; close(now_cmd)
-                        if ($2 == 0 || $2 == "") {
-                            rel = "Active"
-                        } else {
-                            diff = now_ts - $2
-                            if (diff < 0) diff = 0
-                            
-                            if (diff < 60) { rel = diff (diff == 1 ? " second ago" : " seconds ago") }
-                            else if (diff < 3600) { v = int(diff / 60); rel = v (v == 1 ? " minute ago" : " minutes ago") }
-                            else if (diff < 86400) { v = int(diff / 3600); rel = v (v == 1 ? " hour ago" : " hours ago") }
-                            else { v = int(diff / 86400); rel = v (v == 1 ? " day ago" : " days ago") }
-                        }
-                        else if (diff < 86400) { v = int(diff / 3600); rel = v (v == 1 ? " hour ago" : " hours ago") }
-                        else { v = int(diff / 86400); rel = v (v == 1 ? " day ago" : " days ago") }
-                        
-                        action = $3; price = $4; qty = $5; itemid = $6; name = $7; buyer = $8; seller = $9; guild = $10
-                        kiosk = $11; color_tag = ($12 != "") ? $12 : "\033[0m"; source_sys = ($13 != "") ? $13 : "Unknown"
-                        
-                        k_str = ""
-                        if (kiosk != "" && kiosk != "0" && k_dict[kiosk] != "") {
-                            split(k_dict[kiosk], kp, "|")
-                            k_loc = kp[1]; k_map = kp[2]
-                            if (k_map != "") k_str = " \033[90m(\033]8;;https://eso-hub.com/en/interactive-map?map=" k_map "\033\\" k_loc "\033]8;;\033\\)\033[0m"
-                            else k_str = " \033[90m(" k_loc ")\033[0m"
-                        } else if (kiosk != "" && kiosk != "0") {
-                            k_str = " \033[90m(" kiosk ")\033[0m"
-                        }
-                        
-                        trade_str = ""
-                        if (seller != "" && buyer != "") {
-                            trade_str = " by \033[36m" seller "\033[0m to \033[36m" buyer "\033[0m"
-                        } else if (seller != "") {
-                            trade_str = " by \033[36m" seller "\033[0m"
-                        } else if (buyer != "") {
-                            trade_str = " to \033[36m" buyer "\033[0m"
-                        }
-                        
-                        g_str = (guild != "" && guild != "Unknown Guild") ? " in \033[35m" guild "\033[0m" : ""
-                        
-                        if (action == "Sold") tag = " \033[38;5;214m[SOLD]\033[0m"
-                        else if (action == "Purchased") tag = " \033[92m[PURCHASED]\033[0m"
-                        else if (action == "Cancelled") tag = " \033[31m[CANCELLED]\033[0m"
-                        else if (action == "Listed") {
-                            if (diff > 2592000) tag = " \033[90m[EXPIRED]\033[0m"
-                            else tag = " \033[34m[AVAILABLE]\033[0m"
-                        }
-                        
-                        sys_tag = " \033[90m[" source_sys "]\033[0m"
-                        
-                        link_start = "\033]8;;https://eso-hub.com/en/trading/" itemid "\033\\"
-                        if (source_sys == "TTC") link_start = "\033]8;;https://us.tamrieltradecentre.com/pc/Trade/SearchResult?ItemID=" itemid "\033\\"
-                        link_end = "\033]8;;\033\\"
-                        
-                        print "[\033[90m" rel "\033[0m] \033[36m" action "\033[0m for \033[32m" price "\033[33mgold\033[0m - \033[32m" qty "x\033[0m " link_start color_tag name "\033[0m" link_end trade_str g_str k_str tag sys_tag
+                    
+                    if (kiosk != "" && kiosk != "0" && k_dict[kiosk] != "") {
+                        split(k_dict[kiosk], kp, "|")
+                        kiosk = kp[1]
                     }
-                ' "$TEMP_DIR_ROOT/LTTC_Sorted.tmp" > "$TEMP_DIR_ROOT/LTTC_Formatted.tmp"
-
-                TOTAL_LINES=$(wc -l < "$TEMP_DIR_ROOT/LTTC_Formatted.tmp")
-                if [ "$TOTAL_LINES" -eq 0 ]; then
-                    echo -e "\n\033[31mNo results found.\033[0m\n"
-                else
-                    TOTAL_PAGES=$(( (TOTAL_LINES + 49) / 50 ))
-                    CURRENT_PAGE=1
-                    while true; do
-                        clear
-                        echo -e "\033[36m--- Results (Page $CURRENT_PAGE of $TOTAL_PAGES) ---\033[0m"
-                        sed -n "$(( (CURRENT_PAGE - 1) * 50 + 1 )),$(( CURRENT_PAGE * 50 ))p" "$TEMP_DIR_ROOT/LTTC_Formatted.tmp"
-                        
-                        echo -e "\n\033[90m--- Found $TOTAL_LINES total items ---\033[0m"
-                        echo -e "\033[33m[N]\033[0m Next Page  \033[33m[P]\033[0m Prev Page  \033[33m[Q]\033[0m Quit to Menu"
-                        read -n 1 -s -p "Action: " p_action
-                        echo ""
-                        case $p_action in
-                            n|N) if [ $CURRENT_PAGE -lt $TOTAL_PAGES ]; then ((CURRENT_PAGE++)); fi ;;
-                            p|P) if [ $CURRENT_PAGE -gt 1 ]; then ((CURRENT_PAGE--)); fi ;;
-                            q|Q) break ;;
-                        esac
-                    done
+                    search_str = tolower($0 "|" kiosk)
+                    if (term == "" || index(search_str, term) > 0) {
+                        print $0
+                    }
+                }' "$DB_DIR/LTTC_History.db" > "$view_tmp"
+                
+                if [ ! -s "$view_tmp" ]; then
+                    echo -e " \033[31m[-] No results found.\033[0m\n"
+                    echo -ne "\033[33mPress Enter to return...\033[0m "
+                    read dummy_var
+                    continue
                 fi
-                rm -f "$TEMP_DIR_ROOT/LTTC_Filter.tmp" "$TEMP_DIR_ROOT/LTTC_Sorted.tmp" "$TEMP_DIR_ROOT/LTTC_Formatted.tmp"
+                
+                # Apply Sorting
+                case "$sort_opt" in
+                    1) sort -t'|' -k2,2nr "$view_tmp" > "$sort_tmp" ;;
+                    2) sort -t'|' -k2,2n "$view_tmp" > "$sort_tmp" ;;
+                    3) sort -t'|' -k4,4nr "$view_tmp" > "$sort_tmp" ;;
+                    4) sort -t'|' -k4,4n "$view_tmp" > "$sort_tmp" ;;
+                    5) sort -t'|' -k7,7f "$view_tmp" > "$sort_tmp" ;;
+                    *) sort -t'|' -k2,2nr "$view_tmp" > "$sort_tmp" ;;
+                esac
+                
+                # Format UI lines
+                awk -F'|' -v db_file="$DB_FILE" '
+                BEGIN { 
+                    '"$master_kiosk_logic"' 
+                    while ((getline line < db_file) > 0) {
+                        split(line, p, "|")
+                        if (p[1] == "GUILD") db_guild_id[p[2]] = p[3]
+                    }
+                    close(db_file)
+                }
+                {
+                    ts=$2; action=$3; price=$4; qty=$5; itemid=$6; name=$7; buyer=$8; seller=$9; guild=$10; kiosk=$11; color=$12; src=$13
+                    
+                    now_cmd = "date +%s"; now_cmd | getline now_ts; close(now_cmd)
+                    if (ts == 0 || ts == "") { rel = "Active" } else {
+                        diff = now_ts - ts; if (diff < 0) diff = 0
+                        if (diff < 60) rel = diff "s ago"
+                        else if (diff < 3600) rel = int(diff/60) "m ago"
+                        else if (diff < 86400) rel = int(diff/3600) "h ago"
+                        else rel = int(diff/86400) "d ago"
+                    }
+                    
+                    action_col = "\033[36m"
+                    if (action == "Sold") action_col = "\033[38;5;214m"
+                    if (action == "Purchased") action_col = "\033[92m"
+                    if (action == "Cancelled") action_col = "\033[31m"
+                    
+                    trade_str = ""
+                    if (seller != "" && buyer != "") {
+                        trade_str = " by \033[36m" seller "\033[0m to \033[36m" buyer "\033[0m"
+                    } else if (seller != "") {
+                        trade_str = " by \033[36m" seller "\033[0m"
+                    } else if (buyer != "") {
+                        trade_str = " to \033[36m" buyer "\033[0m"
+                    }
+                    
+                    k_str = ""
+                    if (kiosk != "" && kiosk != "0" && k_dict[kiosk] != "") {
+                        split(k_dict[kiosk], kp, "|")
+                        k_loc = kp[1]; k_map = kp[2]
+                        if (k_map != "") k_str = " \033[90m(\033]8;;https://eso-hub.com/en/interactive-map?map=" k_map "\033\\" k_loc "\033]8;;\033\\)\033[0m"
+                        else k_str = " \033[90m(" k_loc ")\033[0m"
+                    } else if (kiosk != "" && kiosk != "0") {
+                        k_str = " \033[90m(" kiosk ")\033[0m"
+                    }
+                    
+                    g_str = ""
+                    if (guild != "" && guild != "Unknown Guild" && guild != "Guilds") {
+                        if (guild in db_guild_id) {
+                            gid = db_guild_id[guild]; fake_url = "|H1:guild:" gid "|h" guild "|h"
+                            g_str = " in \033[35m\033]8;;" fake_url "\033\\" guild "\033]8;;\033\\\033[0m"
+                        } else {
+                            g_str = " in \033[35m" guild "\033[0m"
+                        }
+                    }
+                    
+                    link_start = "\033]8;;https://eso-hub.com/en/trading/" itemid "\033\\"
+                    if (src == "TTC") link_start = "\033]8;;https://us.tamrieltradecentre.com/pc/Trade/SearchResult?ItemID=" itemid "\033\\"
+                    link_end = "\033]8;;\033\\"
+                    
+                    printf " [\033[90m%-9s\033[0m] %s%-7s\033[0m for \033[32m%s\033[33mg\033[0m - \033[32m%sx\033[0m %s%s%s\033[0m%s%s%s%s [\033[90m%s\033[0m]\n", rel, action_col, action, price, qty, link_start, color, name, link_end, trade_str, g_str, k_str, src
+                }' "$sort_tmp" > "$view_tmp"
+                
+                # Display using less pager
+                less -R -K -N -P "Page %d (Press SPACE to scroll down, 'q' to quit) " "$view_tmp"
+                
+                rm -f "$view_tmp" "$sort_tmp" 2>/dev/null
                 ;;
             2)
                 echo -e "\n\033[36m--- Top 10 Selling Items (By Volume) ---\033[0m"
                 awk -F'|' '
                     $1=="HISTORY" && ($3=="Sold" || $3=="Purchased" || $3=="Listed") && $5 > 0 {
+                    if (index($7, "Unknown Item (") == 1) next;
                         qty = ($5 > 0) ? $5 : 1
                         unit_p = $4 / qty
                         name = $7
@@ -1111,9 +1357,9 @@ browse_database() {
                             print vol[name] "|" name "|" sugg "|" colors[name]
                         }
                     }' "$DB_DIR/LTTC_History.db" | sort -t'|' -k1,1nr | head -n 10 | awk -F'|' '{
-                        if ($3 == 0) p_str = "Not enough data"
-                        else p_str = sprintf("%.2f", $3) "gold"
-                        print "Suggested price \033[33m" p_str "\033[0m per " $4 $2 "\033[0m"
+                        if ($3 == 0) p_str = "Not enough data for avg"
+                        else p_str = sprintf("%.2f", $3) "g"
+                        print " \033[36m" $1 "x\033[0m sold - " $4 $2 "\033[0m (Avg: \033[33m" p_str "\033[0m)"
                     }'
                 echo ""
                 ;;
@@ -1121,6 +1367,7 @@ browse_database() {
                 echo -e "\n\033[36m--- Top 10 Highest Grossing Items (By Total Gold) ---\033[0m"
                 awk -F'|' '
                     $1=="HISTORY" && ($3=="Sold" || $3=="Purchased" || $3=="Listed") && $5 > 0 {
+                        if (index($7, "Unknown Item (") == 1) next;
                         qty = ($5 > 0) ? $5 : 1
                         unit_p = $4 / qty
                         name = $7
@@ -1156,9 +1403,9 @@ browse_database() {
                             print gold[name] "|" name "|" sugg "|" colors[name]
                         }
                     }' "$DB_DIR/LTTC_History.db" | sort -t'|' -k1,1nr | head -n 10 | awk -F'|' '{
-                        if ($3 == 0) p_str = "Not enough data"
-                        else p_str = sprintf("%.2f", $3) "gold"
-                        print "Suggested price \033[33m" p_str "\033[0m per " $4 $2 "\033[0m"
+                        if ($3 == 0) p_str = "Not enough data for avg"
+                        else p_str = sprintf("%.2f", $3) "g"
+                        print " \033[33m" $1 "g\033[0m grossed - " $4 $2 "\033[0m (Avg: \033[33m" p_str "\033[0m)"
                     }'
                 echo ""
                 ;;
@@ -1168,6 +1415,7 @@ browse_database() {
                 echo -e "\n\033[36m--- Suggested Price Check ---\033[0m"
                 awk -F'|' -v term="$(echo "$p_term" | awk '{print tolower($0)}')" '
                     $1=="HISTORY" && tolower($7) ~ term && ($3=="Listed" || $3=="Sold" || $3=="Purchased") && $4 ~ /^[0-9]+(\.[0-9]+)?$/ && $5 > 0 {
+                    if (index($7, "Unknown Item (") == 1) next;
                         qty = ($5 > 0) ? $5 : 1
                         unit_p = $4 / qty
                         prices[$7, count[$7]++] = unit_p
@@ -1178,10 +1426,7 @@ browse_database() {
                             split(item, parts, SUBSEP)
                             name = parts[1]
                             n = count[name]
-                            if (n < 5) {
-                                if (term != "") { print "\033[31m" name ": Not enough data (" n " listings). Need at least 5 for confidence.\033[0m" }
-                                continue
-                            }
+                            if (n < 5) continue;
                             delete p_arr
                             for (i=0; i<n; i++) { p_arr[i] = prices[name, i] }
                             for (i=0; i<n; i++) {
@@ -1209,211 +1454,118 @@ browse_database() {
                 echo ""
                 ;;
             5)
-                echo -e "\n\033[36m--- Previous Extraction Log ---\033[0m"
-                if [ -s "$LAST_SCAN_FILE" ]; then
-                    print_dynamic_log "$LAST_SCAN_FILE"
-                else
-                    echo -e "\033[31mNo previous scans found or recorded yet.\033[0m"
+                echo -e "\n\033[36m--- View Previous Extraction History ---\033[0m"
+                echo -ne "\033[33mSearch by Source [TTC or ESO-Hub] (leave empty for ALL data):\033[0m "
+                read hist_source
+                
+                echo -e "\n\033[33mSort By:\033[0m"
+                echo " 1) Date (Newest First)"
+                echo " 2) Date (Oldest First)"
+                echo " 3) Price (Highest First)"
+                echo " 4) Price (Lowest First)"
+                echo " 5) Alphabetical (A-Z)"
+                echo -ne "\033[33mChoice [1-5]:\033[0m "
+                read hist_sort
+                
+                view_tmp="$TEMP_DIR_ROOT/lttc_hist_view.tmp"
+                sort_tmp="$TEMP_DIR_ROOT/lttc_hist_sort.tmp"
+                
+                awk -F'|' -v src="$hist_source" '
+                BEGIN { src = tolower(src) }
+                $1 == "HISTORY" {
+                    item_src = tolower($13)
+                    if (src == "" || index(item_src, src) > 0) {
+                        print $0
+                    }
+                }' "$DB_DIR/LTTC_History.db" > "$view_tmp"
+                
+                if [ ! -s "$view_tmp" ]; then
+                    echo -e " \033[31m[-] No history found for that source.\033[0m\n"
+                    echo -ne "\033[33mPress Enter to return...\033[0m "
+                    read dummy_var
+                    continue
                 fi
-                echo ""
-                echo -ne "\033[33mPress Enter to return...\033[0m "
-                read dummy_var
+                
+                # Apply Sorting
+                case "$hist_sort" in
+                    1) sort -t'|' -k2,2nr "$view_tmp" > "$sort_tmp" ;;
+                    2) sort -t'|' -k2,2n "$view_tmp" > "$sort_tmp" ;;
+                    3) sort -t'|' -k4,4nr "$view_tmp" > "$sort_tmp" ;;
+                    4) sort -t'|' -k4,4n "$view_tmp" > "$sort_tmp" ;;
+                    5) sort -t'|' -k7,7f "$view_tmp" > "$sort_tmp" ;;
+                    *) sort -t'|' -k2,2nr "$view_tmp" > "$sort_tmp" ;;
+                esac
+                
+                # Format UI lines
+                awk -F'|' -v db_file="$DB_FILE" '
+                BEGIN { 
+                    '"$master_kiosk_logic"' 
+                    while ((getline line < db_file) > 0) {
+                        split(line, p, "|")
+                        if (p[1] == "GUILD") db_guild_id[p[2]] = p[3]
+                    }
+                    close(db_file)
+                }
+                {
+                    ts=$2; action=$3; price=$4; qty=$5; itemid=$6; name=$7; buyer=$8; seller=$9; guild=$10; kiosk=$11; color=$12; src=$13
+                    
+                    now_cmd = "date +%s"; now_cmd | getline now_ts; close(now_cmd)
+                    if (ts == 0 || ts == "") { rel = "Active" } else {
+                        diff = now_ts - ts; if (diff < 0) diff = 0
+                        if (diff < 60) rel = diff "s ago"
+                        else if (diff < 3600) rel = int(diff/60) "m ago"
+                        else if (diff < 86400) rel = int(diff/3600) "h ago"
+                        else rel = int(diff/86400) "d ago"
+                    }
+                    
+                    action_col = "\033[36m"
+                    if (action == "Sold") action_col = "\033[38;5;214m"
+                    if (action == "Purchased") action_col = "\033[92m"
+                    if (action == "Cancelled") action_col = "\033[31m"
+                    
+                    trade_str = ""
+                    if (seller != "" && buyer != "") {
+                        trade_str = " by \033[36m" seller "\033[0m to \033[36m" buyer "\033[0m"
+                    } else if (seller != "") {
+                        trade_str = " by \033[36m" seller "\033[0m"
+                    } else if (buyer != "") {
+                        trade_str = " to \033[36m" buyer "\033[0m"
+                    }
+                    
+                    k_str = ""
+                    if (kiosk != "" && kiosk != "0" && k_dict[kiosk] != "") {
+                        split(k_dict[kiosk], kp, "|")
+                        k_loc = kp[1]; k_map = kp[2]
+                        if (k_map != "") k_str = " \033[90m(\033]8;;https://eso-hub.com/en/interactive-map?map=" k_map "\033\\" k_loc "\033]8;;\033\\)\033[0m"
+                        else k_str = " \033[90m(" k_loc ")\033[0m"
+                    } else if (kiosk != "" && kiosk != "0") {
+                        k_str = " \033[90m(" kiosk ")\033[0m"
+                    }
+                    
+                    g_str = ""
+                    if (guild != "" && guild != "Unknown Guild" && guild != "Guilds") {
+                        if (guild in db_guild_id) {
+                            gid = db_guild_id[guild]; fake_url = "|H1:guild:" gid "|h" guild "|h"
+                            g_str = " in \033[35m\033]8;;" fake_url "\033\\" guild "\033]8;;\033\\\033[0m"
+                        } else {
+                            g_str = " in \033[35m" guild "\033[0m"
+                        }
+                    }
+                    
+                    link_start = "\033]8;;https://eso-hub.com/en/trading/" itemid "\033\\"
+                    if (src == "TTC") link_start = "\033]8;;https://us.tamrieltradecentre.com/pc/Trade/SearchResult?ItemID=" itemid "\033\\"
+                    link_end = "\033]8;;\033\\"
+                    
+                    printf " [\033[90m%-9s\033[0m] %s%-7s\033[0m for \033[32m%s\033[33mg\033[0m - \033[32m%sx\033[0m %s%s%s\033[0m%s%s%s%s [\033[90m%s\033[0m]\n", rel, action_col, action, price, qty, link_start, color, name, link_end, trade_str, g_str, k_str, src
+                }' "$sort_tmp" > "$view_tmp"
+                
+                # Display 50 items at a time
+                less -R -K -N -P "Page %d (Press SPACE for next 50, 'q' to quit) " "$view_tmp"
+                
+                rm -f "$view_tmp" "$sort_tmp" 2>/dev/null
                 ;;
             6)
                 break
-                ;;
-            7)
-                echo -e "\n\033[36m--- Force Recalculate Database Colors via UESP ---\033[0m"
-                echo -ne "\033[33mEnter a specific Item ID to fix, or leave empty to fetch ALL items from UESP:\033[0m "
-                read target_id
-                
-                target_ids="$TEMP_DIR_ROOT/lttc_recalc_ids.tmp"
-                scraped_dict="$TEMP_DIR_ROOT/lttc_recalc_dict.tmp"
-                > "$scraped_dict"
-                
-                if [ -n "$target_id" ]; then
-                    echo "$target_id" > "$target_ids"
-                else
-                    echo -e "\033[31m[!] WARNING: Fetching all items from UESP may take a long time.\033[0m"
-                    awk -F'|' '$1 ~ /^[0-9]+$/ {print $1}' "$DB_FILE" > "$target_ids"
-                fi
-                
-                total_to_fetch=$(wc -l < "$target_ids" 2>/dev/null || echo 0)
-                if (( total_to_fetch > 0 )); then
-                    tput civis
-                    curr=0
-                    while read -u 3 -r itemid; do
-                        ((curr++))
-                        printf " \033[36m[%d/%d]\033[0m Fetching Color from UESP for ID: %s... \r" "$curr" "$total_to_fetch" "$itemid"
-                        
-                        u_name=""; u_qual=""
-                        html_resp=$(curl -s -m 5 --compressed -H "User-Agent: $RAND_UA" "https://esoitem.uesp.net/itemLink.php?itemid=$itemid" 2>/dev/null)
-                        
-                        if [[ ! "$html_resp" =~ "Just a moment" ]] && [ -n "$html_resp" ]; then
-                            u_name=$(echo "$html_resp" | grep -io '<title>.*</title>' | sed -e 's/<title>UESP:ESO Item -- //gi' -e 's/<title>ESO Item -- //gi' -e 's/<\/title>//gi' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-                            raw_qual=$(echo "$html_resp" | grep -io "value=['\"][^'\"]*['\"]" | grep -ioE "value=['\"](Trash|Normal|Fine|Superior|Epic|Legendary|Mythic)['\"]" | head -n 1)
-                            if [ -z "$raw_qual" ]; then
-                                raw_qual=$(echo "$html_resp" | grep -io 'id="esoil_levelheader"[^>]*>.*</h2' | grep -ioE '(Trash|Normal|Fine|Superior|Epic|Legendary|Mythic)')
-                            fi
-                            case "${raw_qual,,}" in
-                                *fine*) u_qual=2 ;; *superior*) u_qual=3 ;; *epic*) u_qual=4 ;; *legendary*) u_qual=5 ;; *mythic*) u_qual=6 ;; *trash*) u_qual=0 ;; *) u_qual=1 ;;
-                            esac
-                        fi
-                        
-                        if [ -n "$u_name" ]; then
-                            echo "$itemid|$u_name|$u_qual" >> "$scraped_dict"
-                            printf " \033[36m[%d/%d]\033[0m ID: %s -> \033[92m%s\033[0m (Q: %s)\033[K\n" "$curr" "$total_to_fetch" "$itemid" "$u_name" "$u_qual"
-                        else
-                            printf " \033[36m[%d/%d]\033[0m ID: %s -> \033[31mFailed to resolve via UESP.\033[0m\033[K\n" "$curr" "$total_to_fetch" "$itemid"
-                        fi
-                        sleep 0.2
-                    done 3< "$target_ids"
-                    tput cnorm
-                    
-                    if [ -s "$scraped_dict" ]; then
-                        echo -e " \033[33mApplying changes to Database & History...\033[0m"
-                        
-                        awk -F'|' -OFS='|' -v dict_file="$scraped_dict" '
-                        '"$master_color_logic"'
-                        BEGIN {
-                            while ((getline line < dict_file) > 0) { split(line, p, "|"); fetched[p[1]] = p[2]; fetched_q[p[1]] = p[3] }
-                            close(dict_file)
-                        }
-                        {
-                            if ($1 ~ /^[0-9]+$/ && NF >= 6) {
-                                id = $1; s = $3 + 0; v = $4 + 0; name = $6
-                                if (id in fetched && fetched[id] != "") {
-                                    name = fetched[id]; real_qual = fetched_q[id] + 0
-                                    $2 = real_qual; $5 = get_hq(real_qual); $6 = name; $7 = get_cat(name, id, s, v)
-                                }
-                            }
-                            print $0
-                        }' "$DB_FILE" > "$TEMP_DIR_ROOT/LTTC_Database.tmp" 2>/dev/null
-                        if [ -s "$TEMP_DIR_ROOT/LTTC_Database.tmp" ]; then mv "$TEMP_DIR_ROOT/LTTC_Database.tmp" "$DB_FILE"; fi
-                        
-                        awk -F'|' -OFS='|' -v dict_file="$scraped_dict" '
-                        BEGIN {
-                            while ((getline line < dict_file) > 0) { split(line, p, "|"); fetched_name[p[1]] = p[2]; fetched_q[p[1]] = p[3] }
-                            close(dict_file)
-                        }
-                        $1=="HISTORY" {
-                            id = $6
-                            if (id in fetched_name && fetched_name[id] != "") {
-                                $7 = fetched_name[id]; q_num = fetched_q[id] + 0; c = "\033[0m"
-                                if(q_num==0) c="\033[90m"; else if(q_num==1) c="\033[97m"; else if(q_num==2) c="\033[32m"
-                                else if(q_num==3) c="\033[36m"; else if(q_num==4) c="\033[35m"; else if(q_num==5) c="\033[33m"; else if(q_num==6) c="\033[38;5;214m"
-                                $12 = c
-                            }
-                            print $0
-                        }' "$DB_DIR/LTTC_History.db" > "$TEMP_DIR_ROOT/LTTC_History.tmp" 2>/dev/null
-                        if [ -s "$TEMP_DIR_ROOT/LTTC_History.tmp" ]; then mv "$TEMP_DIR_ROOT/LTTC_History.tmp" "$DB_DIR/LTTC_History.db"; fi
-                        
-                        echo -e " \033[92m[✓] Database & History colors successfully updated!\033[0m\n"
-                    fi
-                fi
-                rm -f "$target_ids" "$scraped_dict" 2>/dev/null
-                echo -ne "\033[33mPress Enter to return...\033[0m "
-                read dummy_var
-                ;;
-            8)
-                echo -e "\n\033[36m--- Forcing Fetch for Unknown Items ---\033[0m"
-                missing_ids="$TEMP_DIR_ROOT/lttc_manual_missing.tmp"
-                scraped_dict="$TEMP_DIR_ROOT/lttc_manual_dict.tmp"
-                > "$scraped_dict"
-
-                awk -F'|' '$1 ~ /^[0-9]+$/ && (length($0) >= 6 ? $6 : $3) ~ /^Unknown Item/ {print $1}' "$DB_FILE" > "$missing_ids"
-
-                missing_count=$(wc -l < "$missing_ids" 2>/dev/null || echo 0)
-                if (( missing_count > 0 )); then
-                    echo -e " \033[33mFound $missing_count 'Unknown Items'. Fetching from UESP...\033[0m"
-                    tput civis
-                    curr=0
-                    while read -u 3 -r itemid; do
-                        ((curr++))
-                        printf " \033[36m[%d/%d]\033[0m Checking UESP for ID: %s... \r" "$curr" "$missing_count" "$itemid"
-                        
-                        u_name=""; u_qual=""
-                        html_resp=$(curl -s -m 5 --compressed -H "User-Agent: $RAND_UA" "https://esoitem.uesp.net/itemLink.php?itemid=$itemid" 2>/dev/null)
-                        
-                        if [[ ! "$html_resp" =~ "Just a moment" ]] && [ -n "$html_resp" ]; then
-                            u_name=$(echo "$html_resp" | grep -io '<title>.*</title>' | sed -e 's/<title>UESP:ESO Item -- //gi' -e 's/<title>ESO Item -- //gi' -e 's/<\/title>//gi' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-                            raw_qual=$(echo "$html_resp" | grep -io "value=['\"][^'\"]*['\"]" | grep -ioE "value=['\"](Trash|Normal|Fine|Superior|Epic|Legendary|Mythic)['\"]" | head -n 1)
-                            if [ -z "$raw_qual" ]; then
-                                raw_qual=$(echo "$html_resp" | grep -io 'id="esoil_levelheader"[^>]*>.*</h2' | grep -ioE '(Trash|Normal|Fine|Superior|Epic|Legendary|Mythic)')
-                            fi
-                            case "${raw_qual,,}" in
-                                *fine*) u_qual=2 ;; *superior*) u_qual=3 ;; *epic*) u_qual=4 ;; *legendary*) u_qual=5 ;; *mythic*) u_qual=6 ;; *trash*) u_qual=0 ;; *) u_qual=1 ;;
-                            esac
-                        fi
-                        
-                        if [ -n "$u_name" ]; then
-                            echo "$itemid|$u_name|$u_qual" >> "$scraped_dict"
-                            printf " \033[36m[%d/%d]\033[0m ID: %s -> \033[92m%s\033[0m (Q: %s)\033[K\n" "$curr" "$missing_count" "$itemid" "$u_name" "$u_qual"
-                        else
-                            printf " \033[36m[%d/%d]\033[0m ID: %s -> \033[31mCould not resolve name (Skipping).\033[0m\033[K\n" "$curr" "$missing_count" "$itemid"
-                            echo -ne " \033[33mEnter name manually (or press Enter to skip):\033[0m "
-                            read manual_name
-                            if [ -n "$manual_name" ]; then
-                                echo -ne " \033[33mEnter Quality Number [1=White, 2=Green, 3=Blue, 4=Purple, 5=Gold]:\033[0m "
-                                read manual_qual
-                                [ -z "$manual_qual" ] && manual_qual=1
-                                echo "$itemid|$manual_name|$manual_qual" >> "$scraped_dict"
-                                echo -e " \033[92mSaved manual item: $manual_name (Q: $manual_qual)\033[0m"
-                            fi
-                        fi
-                        sleep 0.2
-                    done 3< "$missing_ids"
-                    tput cnorm
-
-                    if [ -s "$scraped_dict" ]; then
-                        echo -e " \033[33mApplying changes to Database & History...\033[0m"
-                        
-                        awk -F'|' -OFS='|' -v dict_file="$scraped_dict" '
-                        '"$master_color_logic"'
-                        BEGIN {
-                            while ((getline line < dict_file) > 0) { split(line, p, "|"); fetched[p[1]] = p[2]; fetched_q[p[1]] = p[3] }
-                            close(dict_file)
-                        }
-                        {
-                            if ($1 ~ /^[0-9]+$/ && NF >= 6) {
-                                id = $1; s = $3 + 0; v = $4 + 0; name = $6
-                                if (id in fetched && fetched[id] != "") {
-                                    name = fetched[id]; real_qual = fetched_q[id] + 0
-                                    $2 = real_qual; $5 = get_hq(real_qual); $6 = name; $7 = get_cat(name, id, s, v)
-                                }
-                            }
-                            print $0
-                        }' "$DB_FILE" > "$TEMP_DIR_ROOT/LTTC_Database.tmp" 2>/dev/null
-                        if [ -s "$TEMP_DIR_ROOT/LTTC_Database.tmp" ]; then mv "$TEMP_DIR_ROOT/LTTC_Database.tmp" "$DB_FILE"; fi
-                        
-                        awk -F'|' -OFS='|' -v dict_file="$scraped_dict" '
-                        BEGIN {
-                            while ((getline line < dict_file) > 0) { split(line, p, "|"); fetched_name[p[1]] = p[2]; fetched_q[p[1]] = p[3] }
-                            close(dict_file)
-                        }
-                        $1=="HISTORY" {
-                            id = $6
-                            if (id in fetched_name && fetched_name[id] != "") {
-                                $7 = fetched_name[id]; q_num = fetched_q[id] + 0; c = "\033[0m"
-                                if(q_num==0) c="\033[90m"; else if(q_num==1) c="\033[97m"; else if(q_num==2) c="\033[32m"
-                                else if(q_num==3) c="\033[36m"; else if(q_num==4) c="\033[35m"; else if(q_num==5) c="\033[33m"; else if(q_num==6) c="\033[38;5;214m"
-                                $12 = c
-                            }
-                            print $0
-                        }' "$DB_DIR/LTTC_History.db" > "$TEMP_DIR_ROOT/LTTC_History.tmp" 2>/dev/null
-                        if [ -s "$TEMP_DIR_ROOT/LTTC_History.tmp" ]; then mv "$TEMP_DIR_ROOT/LTTC_History.tmp" "$DB_DIR/LTTC_History.db"; fi
-                        
-                        echo -e " \033[92m[+] Database successfully updated with new names and colors!\033[0m"
-                    else
-                        echo -e " \033[31m[-] Could not resolve any names.\033[0m"
-                    fi
-                else
-                    echo -e " \033[92mNo 'Unknown Items' found in the database. Everything is fully resolved!\033[0m"
-                fi
-                
-                rm -f "$missing_ids" "$scraped_dict" 2>/dev/null
-                echo -ne "\n\033[33mPress Enter to return...\033[0m "
-                read dummy_var
                 ;;
             *)
                 echo -e "\033[31mInvalid option.\033[0m"
@@ -1498,17 +1650,28 @@ TTC_USER_AGENT="TamrielTradeCentreClient/1.0.0"
 HM_USER_AGENT="HarvestMapClient/1.0.0"
 
 USER_AGENTS=(
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0"
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:124.0) Gecko/20100101 Firefox/124.0"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 OPR/106.0.0.0"
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1"
 )
 
 ADDON_SETTINGS_FILE="$(dirname "$ADDON_DIR")/AddOnSettings.txt"
 
 check_addon_enabled() {
     local addon="$1"
+    
+    # If the physical folder is missing, instantly report it as disabled.
+    if [ ! -d "$ADDON_DIR/$addon" ]; then
+        echo "false"
+        return
+    fi
     
     # Detect if the user is on a Steamdeck
     local is_deck=false
@@ -1615,31 +1778,60 @@ function get_cat(n,i,s,v) {
 function calc_quality(id, name, s, v) {
     ln = tolower(name)
     
-    # 1. Mythics (Orange)
+    # 1. Mythics
     if(id~/^(165899|187648|171437|165910|175510|181971|181961|175402|184206|191067)$/) return 6
     
-    # 2. Upgrade Mats, Writ Vouchers & Collectibles (Gold/Purple/Blue/Green Overrides)
+    # 2. Hardcoded Overrides (Mats/Collectibles/Gifts)
     if(ln~/citation|truly superb glyph|tempering alloy|dreugh wax|rosin|kuta|perfect roe|aetherial dust|chromium plating|style page:|runebox:|research scroll|psijic ambrosia|master .* writ|indoril inks:/) return 5
     if(ln~/unknown .* writ|welkynar binding|rekuta|grain solvent|mastic|elegant lining|zircon plating|potent nirncrux|fortified nirncrux|culanda lacquer|harvested soul fragment/) return 4
+    if(ln~/tea blends of tamriel|twenty-year ruby port|assorted stolen shiny trinkets|lightly used fiddle|stuffed bear|grisly trophy|companion gift|tin of high isle taffy|angler\047s knife set|dried fish biscuits|beginner\047s bowfishing kit/) return 3
     if(ln~/survey report|dwarven oil|turpen|embroidery|iridium plating|treasure map|bervez juice|frost mirriam/) return 3
     if(ln~/hemming|honing stone|pitch|terne plating|soul gem/) return 2
-    
-    # 3. DYNAMIC MATH FOR RECIPES & FURNISHING PLANS
     if(ln~/^(recipe|design|blueprint|pattern|praxis|formula|diagram|sketch):/) {
         if(s==6) return 5; if(s==5) return 4; if(s==4) return 3; if(s==3) return 2; return 1
     }
 
-    # 4. DYNAMIC MATH FOR GEAR & GENERAL ITEMS
-    if(id~/^(45349|45330|45354)$/) { if(s==365)return 1; if(s==364)return 5; if(s==361)return 4; if(s==360)return 3; if(s==358)return 2; return 1 }
-    if(s>=305 && s<=309) return s-304
+    # 3. ItemLink Mathematical SubType Decoding
+    if(s >= 2 && s <= 6) return s - 1
+    if(s >= 20 && s <= 24) return s - 19
+    if(s >= 25 && s <= 29) return s - 24
+    if(s >= 30 && s <= 34) return s - 29
+    if(s >= 236 && s <= 240) return s - 235
+    if(s >= 241 && s <= 245) return s - 240
+    if(s >= 254 && s <= 258) return s - 253
+    if(s >= 259 && s <= 263) return s - 258
+    if(s >= 272 && s <= 276) return s - 271
+    if(s >= 277 && s <= 281) return s - 276
+    if(s >= 290 && s <= 294) return s - 289
+    if(s >= 295 && s <= 299) return s - 294
+    if(s >= 305 && s <= 309) return s - 304
+    if(s >= 308 && s <= 312) return s - 307
+    if(s >= 313 && s <= 317) return s - 312
+    if(s >= 361 && s <= 365) return s - 360
     
-    if(v<50) {
-        if(s==6) return 5; if(s==5) return 4; if(s==4) return 3; if(s==3) return 2; if(s==2) return 1; return 1
-    } else {
-        if(s>=361 && s<=365) return s-360; if(s==366) return 6;
-        # Fallback: Forces raw materials like Ancestor Silk & Rubedo Leather to Normal (White)
-        return 1
-    }
+    if(s >= 51 && s <= 60) return 2
+    if(s >= 61 && s <= 70) return 3
+    if(s >= 71 && s <= 80) return 4
+    if(s >= 81 && s <= 90) return 3
+    if(s >= 91 && s <= 100) return 4
+    if(s >= 101 && s <= 110) return 5
+    if(s >= 111 && s <= 120) return 1
+    if(s >= 125 && s <= 134) return 1
+    if(s >= 135 && s <= 144) return 2
+    if(s >= 145 && s <= 154) return 3
+    if(s >= 155 && s <= 164) return 4
+    if(s >= 165 && s <= 174) return 5
+    
+    if(s >= 39 && s <= 49) return 2
+    if(s >= 229 && s <= 231) return s - 227
+    if(s >= 232 && s <= 234) return s - 229
+    if(s >= 250 && s <= 252) return s - 247
+    
+    if(s == 7) return 3; if(s == 8) return 4; if(s == 9) return 2
+    if(s == 235 || s == 253) return 1
+    if(s == 366) return 6; if(s == 358) return 2; if(s == 360) return 3
+    
+    return 1
 }
 '
 
@@ -1652,7 +1844,7 @@ sanitize_legacy_data() {
     local found_dirt=false
     for db in "$DB_FILE" "$DB_DIR/LTTC_History.db"; do
         if [ -f "$db" ] && grep -q "<title>" "$db"; then
-            # Use -i.bak for macOS/Linux cross-compatibility
+            # Use -i.bak for macOS/Linux cross compatibility
             sed -i.bak -e 's/<title>UESP:ESO Item -- //g' -e 's/<title>ESO Item -- //g' -e 's/<\/title>//g' "$db" 2>/dev/null
             rm -f "${db}.bak" 2>/dev/null
             found_dirt=true
@@ -1668,130 +1860,52 @@ sanitize_legacy_data
 # Repair Database
 auto_repair_database() {
     if [ ! -f "$DB_FILE" ]; then return; fi
-    
     local tmp_db="$DB_FILE.repair"
     local missing_ids="$TEMP_DIR_ROOT/lttc_db_missing.tmp"
-    local scraped_journal="$TEMP_DIR_ROOT/lttc_repair_journal.txt"
+    local offline_dict="$TEMP_DIR_ROOT/offline_name_dict.tmp"
     
-    # Do NOT wipe the journal file. Ensure it exists so awk doesn't complain.
-    touch "$scraped_journal"
+    # Check if we have missing items
+    awk -F'|' '$1 ~ /^[0-9]+$/ && (length($0) >= 6 ? $6 : $3) ~ /^Unknown Item \(/ { print $1 }' "$DB_FILE" | tr -d '\r' > "$missing_ids"
+    local missing_count=$(wc -l < "$missing_ids" 2>/dev/null)
+    [ -z "$missing_count" ] && missing_count=0
     
-    # Updated AWK logic to check the DB and the existing journal
-    awk -F'|' -v journal="$scraped_journal" '
-    BEGIN {
-        # Load IDs we already fetched in a previous crashed run
-        while ((getline line < journal) > 0) {
-            split(line, pj, "|")
-            if (pj[1] ~ /^[0-9]+$/) already_done[pj[1]] = 1
-        }
-        close(journal)
-    }
-    # Check DB for unknown items, but skip if already in the journal
-    $1 ~ /^[0-9]+$/ && (length($0) >= 6 ? $6 : $3) ~ /^Unknown Item/ {
-        if (!already_done[$1]) print $1
-    }' "$DB_FILE" > "$missing_ids"
-    
-    local missing_count=$(wc -l < "$missing_ids" 2>/dev/null || echo 0)
-    
-    # Calculate how many we already have buffered in the journal for the progress display
-    local journal_count=$(grep -cE '^[0-9]+|' "$scraped_journal" 2>/dev/null || echo 0)
-    local total_job_count=$((missing_count + journal_count))
-
     if (( missing_count > 0 )); then
-        if [ "$SILENT" = false ]; then
-            # Display total progress including what was saved from previous runs
-            echo -e " \e[33m[!] Auto-Repair: Resuming fetch. $journal_count already saved. Fetching $missing_count remaining...\e[0m"
-            tput civis
-        fi
-        log_event "INFO" "Auto-repair: Resuming fetch for $missing_count items ($journal_count buffered)."
+        if [ "$SILENT" = false ]; then echo -e " \e[33m[!] Auto-Repair: Scanning local TTC data to resolve $missing_count items offline...\e[0m"; fi
         
-        # Start current counter at the number already buffered
-        local curr=$journal_count
-        while read -u 3 -r itemid; do
-            ((curr++))
-            if [ "$SILENT" = false ]; then
-                # Display progress out of the TOTAL job size
-                printf " \e[36m[%d/%d]\e[0m Checking UESP for ID: %s... \r" "$curr" "$total_job_count" "$itemid"
-            fi
-            
-            local u_name=""
-            local u_qual=""
-            # Add -L to follow redirects and increase timeout slightly for stability
-            local html_resp=$(curl -s -L -m 10 --compressed -H "User-Agent: $RAND_UA" "https://esoitem.uesp.net/itemLink.php?itemid=$itemid" 2>/dev/null)
-            
-            if [[ ! "$html_resp" =~ "Just a moment" ]] && [ -n "$html_resp" ]; then
-                u_name=$(echo "$html_resp" | grep -io '<title>.*</title>' | sed -e 's/<title>UESP:ESO Item -- //gi' -e 's/<title>ESO Item -- //gi' -e 's/<\/title>//gi' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-                local raw_qual=$(echo "$html_resp" | grep -io "value=['\"][^'\"]*['\"]" | grep -ioE "value=['\"](Trash|Normal|Fine|Superior|Epic|Legendary|Mythic)['\"]" | head -n 1)
-                if [ -z "$raw_qual" ]; then
-                    raw_qual=$(echo "$html_resp" | grep -io 'id="esoil_levelheader"[^>]*>.*</h2' | grep -ioE '(Trash|Normal|Fine|Superior|Epic|Legendary|Mythic)')
-                fi
-                case "${raw_qual,,}" in
-                    *fine*) u_qual=2 ;; *superior*) u_qual=3 ;; *epic*) u_qual=4 ;; *legendary*) u_qual=5 ;; *mythic*) u_qual=6 ;; *trash*) u_qual=0 ;; *) u_qual=1 ;;
-                esac
-            fi
-            
-            if [ -n "$u_name" ]; then
-                [ -z "$u_qual" ] && u_qual="1" # Fallback to White if missing
-                
-                # Append instantly to the persistent journal file
-                echo "$itemid|$u_name|$u_qual" >> "$scraped_journal"
-                
-                if [ "$SILENT" = false ]; then
-                    printf " \e[36m[%d/%d]\e[0m ID: %s -> Found Name: \e[92m%s\e[0m (Q: %s)\e[K\n" "$curr" "$total_job_count" "$itemid" "$u_name" "$u_qual"
-                fi
-            else
-                if [ "$SILENT" = false ]; then
-                    printf " \e[36m[%d/%d]\e[0m ID: %s -> \e[31mCould not resolve name (Skipping).\e[0m\e[K\n" "$curr" "$total_job_count" "$itemid"
-                fi
-                # mark as failed in journal so we don't retry endlessly? for now... and try again later
-            fi
-            # Slight increase in sleep to be nicer to UESP during massive batches
-            sleep 0.25
-        done 3< "$missing_ids"
+        # Get Item Names directly from local TTC Item Links
+        grep -oE '\|H[^:]*:item:[0-9]+[^|]*\|h[^|]+\|h' "$SAVED_VAR_DIR/TamrielTradeCentre.lua" 2>/dev/null | \
+        awk -F'\\|h' '{
+            split($1, parts, ":"); id = parts[3]; name = $2
+            sub(/\^.*$/, "", name)
+            if (id ~ /^[0-9]+$/ && name != "") print id "|" name
+        }' | sort -u > "$offline_dict"
         
-        if [ "$SILENT" = false ]; then
-            printf " \e[92m[✓]\e[0m Database unknown items fetched!                 \033[K\n"
-            tput cnorm
-        fi
-    fi
-    
-    # if journal has data, merge it.
-    if [ -s "$scraped_journal" ]; then
-         if [ "$SILENT" = false ]; then echo -e " \e[33mMerging fetched data into database...\e[0m"; fi
-        awk -F'|' -OFS='|' -v dict_file="$scraped_journal" '
+        # Apply Names & Colors to the Database instantly
+        awk -F'|' -OFS='|' -v lookup="$offline_dict" '
         '"$master_color_logic"'
         BEGIN {
-            while ((getline line < dict_file) > 0) {
-                split(line, p, "|")
-                fetched[p[1]] = p[2]
-                fetched_q[p[1]] = p[3]
-            }
-            close(dict_file)
+            while ((getline line < lookup) > 0) { split(line, p, "|"); names[p[1]] = p[2] }
+            close(lookup)
         }
         {
             if ($1 ~ /^[0-9]+$/ && NF >= 6) {
-                id = $1; s = $3 + 0; v = $4 + 0; name = $6
-                
-                if (id in fetched && fetched[id] != "") {
-                    name = fetched[id]
-                    # Use the exact quality from HTML scrape
-                    real_qual = fetched_q[id] + 0
-                    # Update the line
-                    $2 = real_qual; $5 = get_hq(real_qual); $6 = name; $7 = get_cat(name, id, s, v)
+                if ($6 ~ /^Unknown Item \(/ || $6 == "") {
+                    if (names[$1] != "") {
+                        $6 = names[$1]
+                        real_qual = calc_quality($1, $6, $3+0, $4+0)
+                        $2 = real_qual; $5 = get_hq(real_qual); $7 = get_cat($6, $1, $3+0, $4+0)
+                    }
                 }
             }
             print $0
-        }
-        ' "$DB_FILE" > "$tmp_db" 2>/dev/null
+        }' "$DB_FILE" > "$tmp_db" 2>/dev/null
         
         if [ -s "$tmp_db" ]; then 
             mv "$tmp_db" "$DB_FILE"
-            # Only delete the journal AFTER a successful merge
-            rm -f "$scraped_journal" 2>/dev/null
-             if [ "$SILENT" = false ]; then echo -e " \e[92m[✓]\e[0m Database merge complete."; fi
+            if [ "$SILENT" = false ]; then echo -e " \e[92m[✓]\e[0m Offline Database repair complete!"; fi
         fi
     fi
-    rm -f "$missing_ids" 2>/dev/null
+    rm -f "$missing_ids" "$offline_dict" 2>/dev/null
 }
         
 auto_repair_database
@@ -1827,13 +1941,75 @@ while true; do
     
     mkdir -p "$TEMP_DIR" && cd "$TEMP_DIR" || exit
 
+    # Prompt for missing addons outside of any background loops
+    ensure_missing_addon "TamrielTradeCentre" "1245" "SKIP_DL_TTC"
+    ensure_missing_addon "HarvestMap" "57" "SKIP_DL_HM"
+    ensure_missing_addon "HarvestMapData" "3034" "SKIP_DL_HM"
+    ensure_missing_addon "LibEsoHubPrices" "4095" "SKIP_DL_EH"
+    
+    # ESO-Hub Downloader
+    if [ "$SKIP_DL_EH" != true ]; then
+        if [ ! -d "$ADDON_DIR/EsoTradingHub" ] || [ ! -d "$ADDON_DIR/EsoHubScanner" ]; then
+            ans="y"
+        if [ ! -f "/etc/os-release" ] || ! grep -qi "steamos" "/etc/os-release"; then
+            echo -ne "\n \e[33m[?] ESO-Hub Addons are missing. Do you want to download them? (y/N):\e[0m "
+            read -r ans < /dev/tty
+        fi
+        if [[ "$ans" =~ ^[Yy]$ ]]; then
+            ui_echo " \e[36mDownloading ESO-Hub Addon...\e[0m"
+            api_resp=$(curl -s -X POST -H "User-Agent: ESOHubClient/1.0.9" -d "user_token=&client_system=$SYS_ID&client_version=1.0.9&lang=en" "https://data.eso-hub.com/v1/api/get-addon-versions" 2>/dev/null)
+            addon_lines=$(echo "$api_resp" | sed 's/{"folder_name"/\n{"folder_name"/g' | grep '"folder_name"')
+            
+            while read -r line; do
+                # Strip out hidden characters (\r, \n, tabs, spaces)
+                fname=$(echo "$line" | grep -oE '"folder_name":"[^"]+"' | cut -d'"' -f4 | tr -d '\r\n\t ')
+                if [ "$fname" = "LibEsoHubPrices" ]; then continue; fi
+                dl_url=$(echo "$line" | grep -oE '"file":"[^"]+"' | cut -d'"' -f4 | sed 's/\\//g' | tr -d '\r\n\t ')
+                srv_ver=$(echo "$line" | grep -oE '"version":\{[^}]*\}' | grep -oE '"string":"[^"]+"' | cut -d'"' -f4 | tr -d '\r\n\t ')
+                id_num=$(echo "$dl_url" | grep -oE '[0-9]+$')
+                [ -z "$id_num" ] && id_num="0"
+                
+                if [ -n "$fname" ] && [ -n "$dl_url" ]; then
+                    ui_echo " \e[36mDownloading $fname...\e[0m"
+                    
+                    # timeout in 30 seconds to prevent freezing
+                    # </dev/null to prevent curl from stealing the while loop's stream
+                    if curl -s -f -m 30 -L -A "ESOHubClient/1.0.9" -o "$TEMP_DIR_ROOT/${fname}.zip" --url "$dl_url" </dev/null; then
+                        unzip -q -o "$TEMP_DIR_ROOT/${fname}.zip" -d "$ADDON_DIR/" > /dev/null 2>&1
+                        rm -f "$TEMP_DIR_ROOT/${fname}.zip"
+                        ui_echo " \e[92m[+] $fname installed successfully.\e[0m"
+                        
+                        # Save version so it skips redownloading
+                        var_name="EH_LOC_$id_num"
+                        printf -v "$var_name" "%s" "$srv_ver"
+                        CONFIG_CHANGED=true
+                        
+                        settings_file="$ADDON_DIR/../AddOnSettings.txt"
+                        if [ -f "$settings_file" ]; then
+                            sed -i.bak -e "s/^$fname 0/$fname 1/g" "$settings_file" 2>/dev/null
+                            grep -q "^$fname " "$settings_file" || echo "$fname 1" >> "$settings_file"
+                            rm -f "$ADDON_DIR/../AddOnSettings.txt.bak" 2>/dev/null
+                        fi
+                    else
+                    ui_echo " \e[31m[-] Download failed for $fname (Timeout or Blocked).\e[0m"
+                fi
+            fi
+        done <<< "$addon_lines"
+    else
+        ui_echo " \e[90mUser Declined download of ESO-Hub Addons. Will not ask again.\e[0m"
+        SKIP_DL_EH=true
+        save_config
+    fi
+        fi
+    fi
+
     HAS_TTC=$(check_addon_enabled "TamrielTradeCentre")
     HAS_HM=$(check_addon_enabled "HarvestMap")
 
     # TTC Data extraction & upload
     if [ "$HAS_TTC" = "false" ]; then
         ui_echo "\e[1m\e[97m [1/4] & [2/4] Updating TTC Data (SKIPPED)\e[0m"
-        ui_echo " \e[31m[-] TamrielTradeCentre is not installed/enabled in AddOnSettings.txt. \e[35mSkipping TTC updates.\e[0m\n"
+        ui_echo " \e[31m[-] TamrielTradeCentre is not installed or enabled in AddOnSettings.txt. \e[35mSkipping TTC updates.\e[0m\n"
         NOTIF_TTC="Not Installed (Skipped)"
         log_event "WARN" "TTC not found or enabled. Skipping TTC updates."
     else
@@ -1856,73 +2032,8 @@ while true; do
                     ui_echo " \e[36mExtracting new local listings & sales data from TTC...\e[0m"
                     log_event "INFO" "Extracting new TTC sales data."
                     echo -e "\n\e[0;35m--- TTC Extracted Data ---\e[0m" >> "$TEMP_SCAN_FILE"
-                    
-                    MISSING_IDS_FILE="$TEMP_DIR_ROOT/lttc_missing_ids.tmp"
-                    SCRAPED_JOURNAL="$TEMP_DIR_ROOT/lttc_ttc_journal.txt"
-                    touch "$SCRAPED_JOURNAL"
 
-                    # find missing TTC items
-                    grep -oE '\["ItemLink"\][ \t]*=[ \t]*"\|H[^:]*:item:[0-9]+' "$SAVED_VAR_DIR/TamrielTradeCentre.lua" | cut -d':' -f3 | sort -u > "$TEMP_DIR_ROOT/lttc_all_ids.tmp"
-
-                    awk -F'|' -v db="$DB_FILE" -v journal="$SCRAPED_JOURNAL" '
-                    BEGIN {
-                        while ((getline line < db) > 0) {
-                            split(line, p, "|")
-                            if (p[1] ~ /^[0-9]+$/ && p[6] != "" && p[6] !~ /^Unknown Item/) known[p[1]] = 1
-                        }
-                        close(db)
-                        while ((getline line < journal) > 0) {
-                            split(line, pj, "|")
-                            if (pj[1] ~ /^[0-9]+$/) known[pj[1]] = 1
-                        }
-                        close(journal)
-                    }
-                    { if (!known[$1]) print $1 }
-                    ' "$TEMP_DIR_ROOT/lttc_all_ids.tmp" > "$MISSING_IDS_FILE"
-
-                    MISSING_COUNT=$(wc -l < "$MISSING_IDS_FILE" 2>/dev/null)
-                    [ -z "$MISSING_COUNT" ] && MISSING_COUNT=0
-                    JOURNAL_COUNT=$(grep -cE '^[0-9]+\|' "$SCRAPED_JOURNAL" 2>/dev/null)
-                    [ -z "$JOURNAL_COUNT" ] && JOURNAL_COUNT=0
-                    TOTAL_JOB_COUNT=$((MISSING_COUNT + JOURNAL_COUNT))
-
-                    if (( MISSING_COUNT > 0 )); then
-                        ui_echo " \e[33mFetching $MISSING_COUNT unknown items ($JOURNAL_COUNT already buffered)...\e[0m"
-                        tput civis
-                        curr=$JOURNAL_COUNT
-                        while read -u 3 -r itemid; do
-                            ((curr++))
-                            printf " \e[36m[%d/%d]\e[0m Checking UESP HTML for ID: %s... \r" "$curr" "$TOTAL_JOB_COUNT" "$itemid"
-                            
-                            u_name=""
-                            u_qual=""
-                            html_resp=$(curl -s -L -m 10 --compressed -H "User-Agent: $RAND_UA" "https://esoitem.uesp.net/itemLink.php?itemid=$itemid" 2>/dev/null)
-                            
-                            if [[ ! "$html_resp" =~ "Just a moment" ]] && [ -n "$html_resp" ]; then
-                                u_name=$(echo "$html_resp" | grep -io '<title>.*</title>' | sed -e 's/<title>UESP:ESO Item -- //gi' -e 's/<title>ESO Item -- //gi' -e 's/<\/title>//gi' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-                                raw_qual=$(echo "$html_resp" | grep -io "value=['\"][^'\"]*['\"]" | grep -ioE "value=['\"](Trash|Normal|Fine|Superior|Epic|Legendary|Mythic)['\"]" | head -n 1)
-                                if [ -z "$raw_qual" ]; then
-                                    raw_qual=$(echo "$html_resp" | grep -io 'id="esoil_levelheader"[^>]*>.*</h2' | grep -ioE '(Trash|Normal|Fine|Superior|Epic|Legendary|Mythic)')
-                                fi
-                                case "${raw_qual,,}" in
-                                    *fine*) u_qual=2 ;; *superior*) u_qual=3 ;; *epic*) u_qual=4 ;; *legendary*) u_qual=5 ;; *mythic*) u_qual=6 ;; *trash*) u_qual=0 ;; *) u_qual=1 ;;
-                                esac
-                            fi
-                            
-                            if [ -n "$u_name" ]; then
-                                [ -z "$u_qual" ] && u_qual="1"
-                                echo "$itemid|$u_name|$u_qual" >> "$SCRAPED_JOURNAL"
-                                printf " \e[36m[%d/%d]\e[0m ID: %s -> \e[92m%s\e[0m (Q: %s)\e[K\n" "$curr" "$TOTAL_JOB_COUNT" "$itemid" "$u_name" "$u_qual"
-                            else
-                                printf " \e[36m[%d/%d]\e[0m ID: %s -> \e[31mFailed to resolve.\e[0m\e[K\n" "$curr" "$TOTAL_JOB_COUNT" "$itemid"
-                            fi
-                            sleep 0.25
-                        done 3< "$MISSING_IDS_FILE"
-                        printf " \e[92m[✓]\e[0m Item fetching complete!                           \033[K\n"
-                        tput cnorm
-                    fi
-                    
-                    awk -v last_time="$TTC_LAST_SALE" -v now_time="$CURRENT_TIME" -v db_file="$DB_FILE" -v scraped_dict="$SCRAPED_JOURNAL" '
+                    awk -v last_time="$TTC_LAST_SALE" -v now_time="$CURRENT_TIME" -v db_file="$DB_FILE" '
                     '"$master_color_logic"'
                     BEGIN { 
                         max_time = last_time; count = 0;
@@ -1936,11 +2047,6 @@ while true; do
                             }
                         }
                         close(db_file)
-                        while ((getline line < scraped_dict) > 0) {
-                            split(line, p, "|")
-                            db_name[p[1]] = p[2]; fetched_q[p[1]] = p[3]
-                        }
-                        close(scraped_dict)
                         '"$master_kiosk_logic"'
                     }
                     { sub(/\r$/, "") }
@@ -1982,17 +2088,21 @@ while true; do
                     in_item && /\["TimeStamp"\][ \t]*=/ { match($0, /[0-9]+/); if(stime=="") stime=substr($0, RSTART, RLENGTH) }
                     in_item && /\["TotalPrice"\][ \t]*=/ { match($0, /[0-9]+/); price=substr($0, RSTART, RLENGTH) }
                     in_item && /\["Price"\][ \t]*=/ { if ($0 !~ /TotalPrice/) { match($0, /[0-9]+/); if(price=="") price=substr($0, RSTART, RLENGTH) } }
-                    in_item && /\["ID"\][ \t]*=/ { match($0, /[0-9]+/); itemid=substr($0, RSTART, RLENGTH) }
                     in_item && /\["Buyer"\][ \t]*=/ { match($0, /\["Buyer"\][ \t]*=[ \t]*"([^"]+)"/); if(RLENGTH>0) { buyer=substr($0,RSTART,RLENGTH); sub(/.*\["Buyer"\][ \t]*=[ \t]*"/,"",buyer); sub(/"$/,"",buyer) } }
                     in_item && /\["Seller"\][ \t]*=/ { match($0, /\["Seller"\][ \t]*=[ \t]*"([^"]+)"/); if(RLENGTH>0) { seller=substr($0,RSTART,RLENGTH); sub(/.*\["Seller"\][ \t]*=[ \t]*"/,"",seller); sub(/"$/,"",seller) } }
                     in_item && /\["ItemLink"\][ \t]*=/ {
-                        match($0, /"(\|H[^"]+)"/)
-                        if (RLENGTH > 0) {
+                        if (match($0, /\|H[0-9a-fA-F]*:item:[0-9]+/)) {
+                            item_part = substr($0, RSTART, RLENGTH)
+                            split(item_part, ip, ":")
+                            itemid = ip[3]
+                        }
+                        if (match($0, /"(\|H[^"]+)"/)) {
                             full_link = substr($0, RSTART+1, RLENGTH-2)
-                            split(full_link, lp, ":"); subtype = lp[4]; internal_level = lp[5]
+                            split(full_link, lp, ":")
+                            subtype = lp[4]; internal_level = lp[5]
                         }
                     }
-                    in_item && /\["Name"\][ \t]*=/ { val = $0; sub(/.*Name"\][ \t]*=[ \t]*"/, "", val); sub(/",[ \t]*$/, "", val); name = val }
+                    in_item && /\["Name"\][ \t]*=/ { val = $0; sub(/.*Name"\][ \t]*=[ \t]*"/, "", val); sub(/",[ \t]*$/, "", val); real_name = val }
                     
                     in_item && /^[ \t]*\},?[ \t]*$/ {
                         match($0, /^[ \t]*/)
@@ -2000,33 +2110,38 @@ while true; do
                             in_item = 0; stime_num = (stime == "") ? 0 : stime + 0
                             if (stime_num > max_time) max_time = stime_num
                             
-                            if (stime_num > last_time || last_time == 0) {
+                            if (stime_num > last_time || last_time == 0 || action == "Listed") {
                                 if (amt == "") amt = "1"
-                                if (name != "" && name !~ /^\|[0-9]+\|$/ && price != "") {
-                                    s = subtype + 0; v = internal_level + 0; needs_update = 0; real_name = name
-                                    if (itemid in db_name) {
-                                        if (real_name != "" && real_name !~ /^Unknown Item/ && real_name !~ /^\|[0-9]+\|$/ && real_name != db_name[itemid]) {
-                                            needs_update = 1
-                                        } else { real_name = db_name[itemid] }
-                                        if (db_cols[itemid] < 7) needs_update = 1
-                                    } else { 
-                                        needs_update = 1; if (real_name == "") real_name = "Unknown Item (" itemid ")" 
+                                
+                                if (real_name == "" || real_name ~ /^\|[0-9]+\|$/) {
+                                    if (itemid in db_name && db_name[itemid] !~ /^Unknown Item/) {
+                                        real_name = db_name[itemid]
+                                    } else {
+                                        real_name = "Unknown Item (" itemid ")"
                                     }
+                                }
 
-                                    if (itemid in fetched_q && fetched_q[itemid] != "") {
-                                        real_qual = fetched_q[itemid] + 0
-                                    } else if (itemid in db_qual) {
+                                if (price != "") {
+                                    s = subtype + 0; v = internal_level + 0; needs_update = 0;
+                                    if (itemid in db_name) {
+                                        if (real_name != db_name[itemid] && real_name !~ /^Unknown Item/) needs_update = 1
+                                        if (db_cols[itemid] < 7) needs_update = 1
+                                    } else { needs_update = 1 }
+
+                                    if (itemid in db_qual) {
                                         real_qual = db_qual[itemid] + 0
                                     } else {
                                         real_qual = calc_quality(itemid, real_name, s, v)
                                     }
                                     
+                                    if (index(real_name, "Unknown Item (") == 1) needs_update = 0
                                     if (needs_update) {
                                         hq = get_hq(real_qual); cat = get_cat(real_name, itemid, s, v)
                                         db_updated[itemid] = itemid "|" real_qual "|" s "|" v "|" hq "|" real_name "|" cat
                                         db_name[itemid] = real_name; db_qual[itemid] = real_qual; db_cols[itemid] = 7
                                     }
 
+                                    # Always format colors for display
                                     q_num = real_qual + 0; c = "\033[0m"
                                     if(q_num==0) c="\033[90m"; else if(q_num==1) c="\033[97m"; else if(q_num==2) c="\033[32m"
                                     else if(q_num==3) c="\033[36m"; else if(q_num==4) c="\033[35m"; else if(q_num==5) c="\033[33m"
@@ -2079,16 +2194,27 @@ while true; do
                                     }
 
                                     ts_str = (stime_num > 0) ? stime_num "|" : "0|"
+                                    
+                                    # ALWAYS Display the item
                                     lines[count] = ts_str " \033[36m" action "\033[0m for \033[32m" price "\033[33mgold\033[0m - \033[32m" amt "x\033[0m " link_start c real_name "\033[0m" link_end trade_str guild_str status_tag
-                                    hist_lines[count] = "HISTORY|" ts_str action "|" price "|" amt "|" itemid "|" real_name "|" buyer "|" seller "|" guild "|" kiosk "|" c "|TTC"
+                                    
+                                    # ONLY save to History if it is a known item
+                                    if (index(real_name, "Unknown Item (") == 0 && guild != "Guilds" && guild != "Unknown Guild" && guild != "") {
+                                        hist_lines[count] = "HISTORY|" ts_str action "|" price "|" amt "|" itemid "|" real_name "|" buyer "|" seller "|" guild "|" kiosk "|" c "|TTC"
+                                    } else {
+                                        hist_lines[count] = ""
+                                    }
+                                    
                                     count++
                                 }
                             }
-                            name=""; price=""; amt=""; stime=""; itemid=""; subtype="0"; internal_level="0"; buyer=""; seller=""
                         }
                     }
                     END {
-                        for (i = 0; i < count; i++) { print lines[i]; print hist_lines[i] }
+                        for (i = 0; i < count; i++) { 
+                            print lines[i]
+                            if (hist_lines[i] != "") print hist_lines[i] 
+                        }
                         print "MAX_TIME:" max_time
                         for (i in db_updated) { print "DB_UPDATE|" db_updated[i] }
                     }' "$SAVED_VAR_DIR/TamrielTradeCentre.lua" > "$TEMP_DIR_ROOT/lttc_ttc_tmp.out" 2>> "$LOG_FILE" &
@@ -2103,9 +2229,7 @@ while true; do
                         sleep 0.1
                         printf "\r"
                     done
-                    printf " \e[92m[✓]\e[0m Extraction complete!                  \033[K\n"
                     tput cnorm
-                    
                     AWK_OUT=$(< "$TEMP_DIR_ROOT/lttc_ttc_tmp.out")
                     rm -f "$TEMP_DIR_ROOT/lttc_ttc_tmp.out"
                     
@@ -2115,6 +2239,7 @@ while true; do
                     HISTORY_OUTPUT=$(echo "$AWK_OUT" | grep "^HISTORY|")
 
                     if [ -n "$RAW_DATA" ]; then
+                        printf " \e[92m[✓]\e[0m Extraction complete!                  \033[K\n"
                         FOUND_NEW_DATA=true
                         echo "$RAW_DATA" | while IFS='|' read -r ts output_str; do
                             if [ "$ts" = "0" ]; then 
@@ -2127,8 +2252,8 @@ while true; do
                             log_event "ITEM" "$raw_line"
                         done
                     else
-                        ui_echo " \e[90mNo new sales or listings found since last upload.\e[0m"
-                        echo -e " \e[90mNo new sales or listings found since last upload.\e[0m" >> "$TEMP_SCAN_FILE"
+                        printf "\r\033[K"
+                        ui_echo " \e[90mNo new TTC items found. Upload skipped.\e[0m"
                         log_event "INFO" "No new TTC sales or listings found."
                     fi
 
@@ -2146,17 +2271,24 @@ while true; do
                 if [ "$ENABLE_LOCAL_MODE" = true ]; then
                     ui_echo "\n \e[90m[Local Mode] Skipping TTC Upload. Data extracted to local DB only.\e[0m\n"
                     NOTIF_TTC="Extracted (No Upload)"
+                    cp -f "$SAVED_VAR_DIR/TamrielTradeCentre.lua" "$SNAP_DIR/lttc_ttc_snapshot.lua" 2>/dev/null
                 else
-                    ui_echo "\n \e[36mUploading to:\e[0m https://$TTC_DOMAIN/pc/Trade/WebClient/Upload"
-                    
-                    if (curl -s -A "$TTC_USER_AGENT" -F "SavedVarFileInput=@$SAVED_VAR_DIR/TamrielTradeCentre.lua" "https://$TTC_DOMAIN/pc/Trade/WebClient/Upload" > /dev/null 2>&1); then
-                        NOTIF_TTC="Data Uploaded"
-                        ui_echo " \e[92m[+] Upload finished.\e[0m\n"
-                        log_event "INFO" "TTC data upload successful."
+                    if [ -z "$RAW_DATA" ]; then
+                        NOTIF_TTC="No New Data"
+                        cp -f "$SAVED_VAR_DIR/TamrielTradeCentre.lua" "$SNAP_DIR/lttc_ttc_snapshot.lua" 2>/dev/null
                     else
-                        NOTIF_TTC="Upload Failed"
-                        ui_echo " \e[31m[!] Upload failed.\e[0m\n"
-                        log_event "ERROR" "TTC data upload failed."
+                        ui_echo "\n \e[36mUploading to:\e[0m https://$TTC_DOMAIN/pc/Trade/WebClient/Upload"
+                        
+                        if (curl -s -A "$TTC_USER_AGENT" -F "SavedVarFileInput=@$SAVED_VAR_DIR/TamrielTradeCentre.lua" "https://$TTC_DOMAIN/pc/Trade/WebClient/Upload" > /dev/null 2>&1); then
+                            NOTIF_TTC="Data Uploaded"
+                            ui_echo " \e[92m[+] Upload finished.\e[0m\n"
+                            log_event "INFO" "TTC data upload successful."
+                            cp -f "$SAVED_VAR_DIR/TamrielTradeCentre.lua" "$SNAP_DIR/lttc_ttc_snapshot.lua" 2>/dev/null
+                        else
+                            NOTIF_TTC="Upload Failed"
+                            ui_echo " \e[31m[!] Upload failed.\e[0m\n"
+                            log_event "ERROR" "TTC data upload failed."
+                        fi
                     fi
                 fi
             fi
@@ -2288,9 +2420,11 @@ while true; do
             DL_URL=$(echo "$line" | grep -oE '"file":"[^"]+"' | cut -d'"' -f4 | sed 's/\\//g')
             
             if [ -z "$FNAME" ]; then continue; fi
+            
             HAS_THIS_EH=$(check_addon_enabled "$FNAME")
+
             if [ "$HAS_THIS_EH" = "false" ]; then
-                ui_echo " \e[31m[-] $FNAME is not enabled. \e[35mSkipping.\e[0m"
+                ui_echo " \e[31m[-] $FNAME installed or enabled in AddOnSettings.txt. \e[35mSkipping.\e[0m"
                 log_event "INFO" "$FNAME not enabled. Skipping."
                 continue
             fi
@@ -2307,6 +2441,14 @@ while true; do
             VAR_LOC_NAME="EH_LOC_$ID_NUM"
             LOC_VER="${!VAR_LOC_NAME}"
             [ -z "$LOC_VER" ] && LOC_VER="0"
+            
+            # Adopt server version if the addon exists physically but config is 0
+            if [ "$LOC_VER" = "0" ] && [ -d "$ADDON_DIR/$FNAME" ]; then
+                LOC_VER="$SRV_VER"
+                printf -v "$VAR_LOC_NAME" "%s" "$SRV_VER"
+                CONFIG_CHANGED=true
+            fi
+
             [ "$SRV_VER" = "$LOC_VER" ] && V_COL="\e[92m" || V_COL="\e[31m"
 
             ui_echo " \e[33mChecking server for $FNAME.zip...\e[0m"
@@ -2328,152 +2470,93 @@ while true; do
                         ui_echo " \e[36mExtracting new sales & scan data from EsoTradingHub...\e[0m"
                         log_event "INFO" "Extracting EsoTradingHub data."
                         echo -e "\n\e[0;35m--- ESO-Hub Extracted Data ---\e[0m" >> "$TEMP_SCAN_FILE"
-                        
-    MISSING_IDS_FILE="$TEMP_DIR_ROOT/lttc_missing_ids.tmp"
-                        SCRAPED_JOURNAL="$TEMP_DIR_ROOT/lttc_eh_journal.txt"
-                        touch "$SCRAPED_JOURNAL"
 
-                        # Extract all unique Item IDs
-                        grep -oE '\|H[0-9a-fA-F]*:item:[0-9]+' "$SAVED_VAR_DIR/$SV_NAME" | cut -d':' -f3 | sort -u > "$TEMP_DIR_ROOT/lttc_all_ids.tmp"
-
-                        # Compare against local database AND Journal
-                        awk -F'|' -v db="$DB_FILE" -v journal="$SCRAPED_JOURNAL" '
-                        BEGIN {
-                            while ((getline line < db) > 0) {
+                        awk -v last_time="$EH_LAST_SALE" -v now_time="$CURRENT_TIME" -v db_file="$DB_FILE" '
+                        '"$master_color_logic"'
+                        BEGIN { 
+                            max_time = last_time; count = 0; scrape_count = 0; stop_scraping = 0
+                            
+                            while ((getline line < db_file) > 0) {
                                 split(line, p, "|")
-                                if (p[1] ~ /^[0-9]+$/) {
-                                    name = (length(p) >= 6) ? p[6] : p[3]
-                                    if (name != "" && name !~ /^Unknown Item/) known[p[1]] = 1
+                                if (p[1] == "GUILD") {
+                                    db_guild_id[p[2]] = p[3]
+                                    db_guild_name[p[3]] = p[2]
+                                } else if (p[1] ~ /^[0-9]+$/) {
+                                    db_cols[p[1]] = length(p)
+                                    db_qual[p[1]] = p[2]
+                                    if (length(p) >= 6) { db_name[p[1]] = p[6] } else { db_name[p[1]] = p[3] }
                                 }
                             }
-                            close(db)
-                            while ((getline line < journal) > 0) {
-                                split(line, pj, "|")
-                                if (pj[1] ~ /^[0-9]+$/) known[pj[1]] = 1
-                            }
-                            close(journal)
+                            close(db_file)
+                            '"$master_kiosk_logic"'
                         }
-                        { if (!known[$1]) print $1 }
-                        ' "$TEMP_DIR_ROOT/lttc_all_ids.tmp" > "$MISSING_IDS_FILE"
-
-                        # Resolve missing names before parsing
-                        MISSING_COUNT=$(wc -l < "$MISSING_IDS_FILE" 2>/dev/null)
-                        [ -z "$MISSING_COUNT" ] && MISSING_COUNT=0
-                        JOURNAL_COUNT=$(grep -cE '^[0-9]+\|' "$SCRAPED_JOURNAL" 2>/dev/null)
-                        [ -z "$JOURNAL_COUNT" ] && JOURNAL_COUNT=0
-                        TOTAL_JOB_COUNT=$((MISSING_COUNT + JOURNAL_COUNT))
-
-                        if (( MISSING_COUNT > 0 )); then
-                            ui_echo " \e[33mFetching $MISSING_COUNT unknown items ($JOURNAL_COUNT already buffered)...\e[0m"
-                            tput civis
-                            curr=$JOURNAL_COUNT
-                            while read -u 3 -r itemid; do
-                                ((curr++))
-                                printf " \e[36m[%d/%d]\e[0m Checking UESP HTML for ID: %s... \r" "$curr" "$TOTAL_JOB_COUNT" "$itemid"
-                                
-                                u_name=""
-                                u_qual=""
-                                html_resp=$(curl -s -L -m 10 --compressed -H "User-Agent: $RAND_UA" "https://esoitem.uesp.net/itemLink.php?itemid=$itemid" 2>/dev/null)
-                                
-                                if [[ ! "$html_resp" =~ "Just a moment" ]] && [ -n "$html_resp" ]; then
-                                    u_name=$(echo "$html_resp" | grep -io '<title>.*</title>' | sed -e 's/<title>UESP:ESO Item -- //gi' -e 's/<title>ESO Item -- //gi' -e 's/<\/title>//gi' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-                                    raw_qual=$(echo "$html_resp" | grep -io "value=['\"][^'\"]*['\"]" | grep -ioE "value=['\"](Trash|Normal|Fine|Superior|Epic|Legendary|Mythic)['\"]" | head -n 1)
-                                    if [ -z "$raw_qual" ]; then
-                                        raw_qual=$(echo "$html_resp" | grep -io 'id="esoil_levelheader"[^>]*>.*</h2' | grep -ioE '(Trash|Normal|Fine|Superior|Epic|Legendary|Mythic)')
-                                    fi
-                                    case "${raw_qual,,}" in
-                                        *fine*) u_qual=2 ;; *superior*) u_qual=3 ;; *epic*) u_qual=4 ;; *legendary*) u_qual=5 ;; *mythic*) u_qual=6 ;; *trash*) u_qual=0 ;; *) u_qual=1 ;;
-                                    esac
-                                fi
-                                
-                                if [ -n "$u_name" ]; then
-                                    [ -z "$u_qual" ] && u_qual="1"
-                                    echo "$itemid|$u_name|$u_qual" >> "$SCRAPED_JOURNAL"
-                                    printf " \e[36m[%d/%d]\e[0m ID: %s -> Found Name: \e[92m%s\e[0m (Q: %s)\e[K\n" "$curr" "$TOTAL_JOB_COUNT" "$itemid" "$u_name" "$u_qual"
-                                else
-                                    printf " \e[36m[%d/%d]\e[0m ID: %s -> \e[31mFailed to resolve.\e[0m\e[K\n" "$curr" "$TOTAL_JOB_COUNT" "$itemid"
-                                fi
-                                sleep 0.25
-                            done 3< "$MISSING_IDS_FILE"
-                            printf " \e[92m[✓]\e[0m Item fetching complete!                           \033[K\n"
-                            tput cnorm
-                        fi
-                                            
-                        awk -v last_time="$EH_LAST_SALE" -v now_time="$CURRENT_TIME" -v db_file="$DB_FILE" -v rand_ua="$RAND_UA" -v scraped_dict="$SCRAPED_JOURNAL" '
-    '"$master_color_logic"'
-    BEGIN { 
-        max_time = last_time; count = 0; scrape_count = 0; stop_scraping = 0
-        
-        # Load Main DB
-        while ((getline line < db_file) > 0) {
-            split(line, p, "|")
-            if (p[1] == "GUILD") {
-                db_guild_id[p[2]] = p[3]
-                db_guild_name[p[3]] = p[2]
-            } else if (p[1] ~ /^[0-9]+$/) {
-                db_cols[p[1]] = length(p)
-                db_qual[p[1]] = p[2]
-                if (length(p) >= 6) { db_name[p[1]] = p[6] } else { db_name[p[1]] = p[3] }
-            }
-        }
-        close(db_file)
-        
-        # Load Pre-Fetched Items
-        while ((getline line < scraped_dict) > 0) {
-            split(line, p, "|")
-            db_name[p[1]] = p[2]
-            fetched_q[p[1]] = p[3]
-        }
-        close(scraped_dict)
-        
-        '"$master_kiosk_logic"'
-    }
-    { sub(/\r$/, "") }
+                        { sub(/\r$/, "") }
                         
-                        /\["traderData"\]/ { in_trader_data = 1 }
-                        /\["guildData"\]/ { in_trader_data = 0 }
-                        in_trader_data && /\["traderName"\][ \t]*=[ \t]*"/ {
-                            match($0, /\["traderName"\][ \t]*=[ \t]*"([^"]+)"/)
-                            if (RLENGTH > 0) {
-                                val = substr($0, RSTART, RLENGTH)
-                                sub(/.*\["traderName"\][ \t]*=[ \t]*"/, "", val)
-                                sub(/".*$/, "", val)
+                        /\["traderData"\]/ { in_trader_data = 1; in_guild_data = 0 }
+                        /\["guildData"\]/ { in_guild_data = 1; in_trader_data = 0 }
+                        
+                        # Capture Trader Name directly from the Parent Node Key
+                        in_trader_data && /^[ \t]*\["([^"]+)"\][ \t]*=[ \t]*$/ {
+                            match($0, /\["([^"]+)"\]/)
+                            val = substr($0, RSTART+2, RLENGTH-4)
+                            if (val != "NA Megaserver" && val != "EU Megaserver" && val != "PTS" && val != "guildHistory") {
                                 current_trader = val
                             }
                         }
-                        in_trader_data && /\[[0-9]+\][ \t]*=[ \t]*[0-9]+/ {
+                        
+                        in_trader_data && /\["mapId"\][ \t]*=[ \t]*[0-9]+/ {
+                            match($0, /[0-9]+/)
+                            if (current_trader != "") trader_maps[current_trader] = substr($0, RSTART, RLENGTH)
+                        }
+                        
+                        # Map the Guild ID to the active Trader Name & Map ID
+                        in_trader_data && /^[ \t]*\[[0-9]+\][ \t]*=[ \t]*[0-9]+,?/ {
                             match($0, /=[ \t]*[0-9]+/)
                             if (RLENGTH > 0) {
                                 gid = substr($0, RSTART, RLENGTH)
                                 sub(/=[ \t]*/, "", gid)
-                                if (current_trader != "") guild_kiosks[gid] = current_trader
+                                if (current_trader != "") {
+                                    guild_kiosks[gid] = current_trader
+                                    if (trader_maps[current_trader] != "") guild_maps[gid] = trader_maps[current_trader]
+                                }
                             }
                         }
 
-                        /\["guildId"\][ \t]*=[ \t]*[0-9]+/ {
+                        # Capture Guild ID from the Parent Node immediately
+                        in_guild_data && /^[ \t]*\[[0-9]+\][ \t]*=[ \t]*$/ {
                             match($0, /[0-9]+/)
-                            gid_val = substr($0, RSTART, RLENGTH)
-                            # Prevent 10-digit timestamps from being recorded as Guild IDs!
-                            if (length(gid_val) <= 8) {
-                                current_guild_id = gid_val
-                                scan_type = ""
+                            current_guild_id = substr($0, RSTART, RLENGTH)
+                            buffered_gname = ""
+                            scan_type = ""
+                        }
+                        
+                        # Capture from guildId key securely
+                        in_guild_data && /\["guildId"\][ \t]*=[ \t]*[0-9]+/ {
+                            match($0, /[0-9]+/)
+                            current_guild_id = substr($0, RSTART, RLENGTH)
+                            if (buffered_gname != "") {
+                                guild_names[current_guild_id] = buffered_gname
+                                db_guild_updated[buffered_gname] = current_guild_id
+                                buffered_gname = ""
                             }
                         }
                         
-                        # Grab Guild name strictly at the exact end quote preventing comma bleeding
-                        /\["(traderGuildName|guildName)"\][ \t]*=[ \t]*"/ {
+                        # Capture Guild Name
+                        in_guild_data && /\["(traderGuildName|guildName)"\][ \t]*=[ \t]*"/ {
                             match($0, /\["(traderGuildName|guildName)"\][ \t]*=[ \t]*"([^"]+)"/)
                             if (RLENGTH > 0) {
                                 val = substr($0, RSTART, RLENGTH)
                                 sub(/.*\["(traderGuildName|guildName)"\][ \t]*=[ \t]*"/, "", val)
-                                sub(/"$/, "", val)
-                                if (current_guild_id != "" && length(current_guild_id) <= 8) {
+                                sub(/".*$/, "", val)
+                                if (current_guild_id != "") {
                                     guild_names[current_guild_id] = val
                                     db_guild_updated[val] = current_guild_id
+                                } else {
+                                    buffered_gname = val
                                 }
                             }
                         }
-                        
+                                
                         /\["(scannedSales|scannedItems|cancelledItems|purchasedItems|traderHistory)"\]/ {
                             match($0, /"(scannedSales|scannedItems|cancelledItems|purchasedItems|traderHistory)"/)
                             stype = substr($0, RSTART+1, RLENGTH-2)
@@ -2514,7 +2597,6 @@ while true; do
                                         price = arr[1]; qty = arr[2]; buyer = ""; seller = ""; stime = 0
                                         if (qty == "") qty = "1"
                                         
-                                        # Get timestamp
                                         for (idx = length(arr); idx >= 3; idx--) {
                                             if (arr[idx] ~ /^[0-9]+$/ && arr[idx] + 0 > 1400000000) {
                                                 stime = arr[idx] + 0
@@ -2531,25 +2613,23 @@ while true; do
                                         if (buyer != "" && buyer !~ /^@/) buyer = "@" buyer
                                         if (seller != "" && seller !~ /^@/) seller = "@" seller
                                         
-                                        needs_scrape = 0
-                                        real_name = "Unknown Item (" itemid ")"
-                                        
-                                        if (itemid in db_name) {
+                                        if (itemid in db_name && db_name[itemid] !~ /^Unknown Item/) {
                                             real_name = db_name[itemid]
-                                            if (real_name ~ /^Unknown Item/) needs_scrape = 1
                                         } else {
-                                            needs_scrape = 1
+                                            real_name = "Unknown Item (" itemid ")"
                                         }
 
-                                        real_qual = calc_quality(itemid, real_name, s, v)
+                                        if (itemid in db_qual) {
+                                            real_qual = db_qual[itemid] + 0
+                                        } else {
+                                            real_qual = calc_quality(itemid, real_name, s, v)
+                                        }
 
                                         needs_update = 0
-                                        if (itemid in db_name) {
+                                        if (index(real_name, "Unknown Item (") == 0) {
                                             if (db_name[itemid] != real_name) needs_update = 1
                                             if (db_qual[itemid] != real_qual) needs_update = 1
                                             if (db_cols[itemid] < 7) needs_update = 1
-                                        } else {
-                                            needs_update = 1
                                         }
 
                                         if (needs_update) {
@@ -2562,42 +2642,50 @@ while true; do
                                         }
 
                                         if (real_name != "" && price != "") {
-                                            q_num = real_qual + 0
-                                            c = "\033[0m"
-                                            if(q_num==0) c="\033[90m"; else if(q_num==1) c="\033[97m"; else if(q_num==2) c="\033[32m"
-                                            else if(q_num==3) c="\033[36m"; else if(q_num==4) c="\033[35m"; else if(q_num==5) c="\033[33m"
-                                            else if(q_num==6) c="\033[38;5;214m"
-                                            
-                                            link_start = "\033]8;;https://eso-hub.com/en/trading/" itemid "\033\\"
-                                            link_end = "\033]8;;\033\\"
-                                            item_display = link_start c real_name "\033[0m" link_end
-                                            
-                                            trade_str = ""
-                                            if (seller != "" && buyer != "") {
-                                                trade_str = " by \033[36m" seller "\033[0m to \033[36m" buyer "\033[0m"
-                                            } else if (seller != "") {
-                                                trade_str = " by \033[36m" seller "\033[0m"
-                                            } else if (buyer != "") {
-                                                trade_str = " to \033[36m" buyer "\033[0m"
-                                            }
-
-                                            age = now_time - stime
-                                            status_tag = ""
-                                            if (scan_type == "Sold") {
-                                                status_tag = " \033[38;5;214m[SOLD]\033[0m"
-                                            } else if (scan_type == "Purchased") {
-                                                status_tag = " \033[92m[PURCHASED]\033[0m"
-                                            } else if (scan_type == "Cancelled") {
-                                                status_tag = " \033[31m[CANCELLED]\033[0m"
-                                            } else if (scan_type == "Listed") {
-                                                if (stime > 0 && age > 2592000) status_tag = " \033[90m[EXPIRED]\033[0m"
-                                                else status_tag = " \033[34m[AVAILABLE]\033[0m"
-                                            }
-
                                             if (stime > max_time) max_time = stime
-                                            if (stime > last_time) {
+                                            if (stime > last_time || stime == 0 || scan_type == "Listed") {
+                                                q_num = real_qual + 0
+                                                c = "\033[0m"
+                                                if(q_num==0) c="\033[90m"; else if(q_num==1) c="\033[97m"; else if(q_num==2) c="\033[32m"
+                                                else if(q_num==3) c="\033[36m"; else if(q_num==4) c="\033[35m"; else if(q_num==5) c="\033[33m"
+                                                else if(q_num==6) c="\033[38;5;214m"
+                                                
+                                                link_start = "\033]8;;https://eso-hub.com/en/trading/" itemid "\033\\"
+                                                link_end = "\033]8;;\033\\"
+                                                item_display = link_start c real_name "\033[0m" link_end
+                                                
+                                                trade_str = ""
+                                                if (seller != "" && buyer != "") {
+                                                    trade_str = " by \033[36m" seller "\033[0m to \033[36m" buyer "\033[0m"
+                                                } else if (seller != "") {
+                                                    trade_str = " by \033[36m" seller "\033[0m"
+                                                } else if (buyer != "") {
+                                                    trade_str = " to \033[36m" buyer "\033[0m"
+                                                }
+
+                                                age = now_time - stime
+                                                status_tag = ""
+                                                if (scan_type == "Sold") {
+                                                    status_tag = " \033[38;5;214m[SOLD]\033[0m"
+                                                } else if (scan_type == "Purchased") {
+                                                    status_tag = " \033[92m[PURCHASED]\033[0m"
+                                                } else if (scan_type == "Cancelled") {
+                                                    status_tag = " \033[31m[CANCELLED]\033[0m"
+                                                } else if (scan_type == "Listed") {
+                                                    if (stime > 0 && age > 2592000) status_tag = " \033[90m[EXPIRED]\033[0m"
+                                                    else status_tag = " \033[34m[AVAILABLE]\033[0m"
+                                                }
+
                                                 lines[count] = stime "|" " \033[36m" scan_type "\033[0m for \033[32m" price "\033[33mgold\033[0m - \033[32m" qty "x\033[0m " item_display trade_str " in GUILD_PLACEHOLDER_" current_guild_id status_tag
-                                                hist_lines[count] = "HISTORY|" stime "|" scan_type "|" price "|" qty "|" itemid "|" real_name "|" buyer "|" seller "|" current_guild_id "||" c "|ESO-Hub"
+                                                
+                                                # ONLY save to History if it is a known item
+                                                if (index(real_name, "Unknown Item (") == 0 && current_guild_id != "") {
+                                                    hist_lines[count] = "HISTORY|" stime "|" scan_type "|" price "|" qty "|" itemid "|" real_name "|" buyer "|" seller "|" current_guild_id "||" c "|ESO-Hub"
+                                                } else {
+                                                    hist_lines[count] = ""
+                                                }
+                                                
+                                                line_gid[count] = current_guild_id
                                                 count++
                                             }
                                         }
@@ -2612,31 +2700,42 @@ while true; do
                                 }
                             }
                             for (i = 0; i < count; i++) { 
+                                gid = line_gid[i]
+                                gname = guild_names[gid]
+                                if (gname == "") gname = db_guild_name[gid]
+
                                 l = lines[i]
                                 h = hist_lines[i]
-                                for (gid in guild_names) {
-                                    if (gid != "") {
-                                        g_link = "\033[35m\033]8;;|H1:guild:" gid "|h" guild_names[gid] "|h\033\\" guild_names[gid] "\033]8;;\033\\\033[0m"
-                                        
-                                        kiosk = guild_kiosks[gid]
-                                        k_str = ""
-                                        if (kiosk != "") {
-                                            if (kiosk in k_dict) {
-                                                split(k_dict[kiosk], kp, "|")
-                                                k_loc = kp[1]; k_map = kp[2]
-                                                if (k_map != "") k_str = " \033[90m(\033]8;;https://eso-hub.com/en/interactive-map?map=" k_map "\033\\" k_loc "\033]8;;\033\\)\033[0m"
-                                                else k_str = " \033[90m(" k_loc ")\033[0m"
-                                            } else k_str = " \033[90m(" kiosk ")\033[0m"
-                                        }
-                                        
-                                        gsub("GUILD_PLACEHOLDER_" gid, g_link k_str, l)
-                                        gsub(gid "\\|\\|", guild_names[gid] "|" kiosk "|", h)
+                                
+                                if (gname != "" && gname != "Unknown Guild") {
+                                    g_link = "\033[35m\033]8;;|H1:guild:" gid "|h" gname "|h\033\\" gname "\033]8;;\033\\\033[0m"
+                                } else {
+                                    g_link = "\033[35mUnknown Guild\033[0m"
+                                    gname = "Unknown Guild"
+                                }
+                                
+                                kiosk = guild_kiosks[gid]
+                                k_str = ""
+                                if (kiosk != "") {
+                                    map_id = guild_maps[gid]
+                                    if (kiosk in k_dict) {
+                                        split(k_dict[kiosk], kp, "|")
+                                        k_loc = kp[1]; k_map = kp[2]
+                                        k_str = " \033[90m(\033]8;;https://eso-hub.com/en/interactive-map?map=" k_map "\033\\" k_loc "\033]8;;\033\\)\033[0m"
+                                    } else if (map_id != "") {
+                                        k_str = " \033[90m(\033]8;;https://eso-hub.com/en/interactive-map?map=" map_id "\033\\" kiosk "\033]8;;\033\\)\033[0m"
+                                    } else {
+                                        k_str = " \033[90m(" kiosk ")\033[0m"
                                     }
                                 }
-                                gsub(/GUILD_PLACEHOLDER_[0-9]+/, "\033[35mUnknown Guild\033[0m", l)
-                                gsub(/[0-9]+\|\|/, "Unknown Guild||", h)
+                                
+                                gsub("GUILD_PLACEHOLDER_" gid, g_link k_str, l)
+                                
                                 print l
-                                print h 
+                                if (h != "") {
+                                    gsub(gid "\\|\\|", gname "|" kiosk "|", h)
+                                    print h 
+                                }
                             }
                             print "MAX_TIME:" max_time
                             for (i in db_updated) { print "DB_UPDATE|" db_updated[i] }
@@ -2653,9 +2752,7 @@ while true; do
                             sleep 0.1
                             printf "\r"
                         done
-                        printf " \e[92m[✓]\e[0m Extraction complete!             \033[K\n"
                         tput cnorm
-                        
                         AWK_OUT=$(< "$TEMP_DIR_ROOT/lttc_eh_tmp.out")
                         rm -f "$TEMP_DIR_ROOT/lttc_eh_tmp.out"
                         
@@ -2665,6 +2762,7 @@ while true; do
                         HISTORY_OUTPUT=$(echo "$AWK_OUT" | grep "^HISTORY|")
 
                         if [ -n "$RAW_DATA" ]; then
+                            printf " \e[92m[✓]\e[0m Extraction complete!             \033[K\n"
                             FOUND_NEW_DATA=true
                             echo "$RAW_DATA" | while IFS='|' read -r ts output_str; do
                                 if [ "$ts" = "0" ]; then 
@@ -2677,8 +2775,8 @@ while true; do
                                 log_event "ITEM" "$raw_line"
                             done
                         else
-                            ui_echo " \e[90mNo new ESO-Hub sales or scans found since last upload.\e[0m"
-                            echo -e " \e[90mNo new ESO-Hub sales or scans found since last upload.\e[0m" >> "$TEMP_SCAN_FILE"
+                            printf "\r\033[K"
+                            ui_echo " \e[90mNo new ESO-Hub items found. Upload skipped.\e[0m"
                             log_event "INFO" "No new ESO-Hub sales found."
                         fi
 
@@ -2703,14 +2801,21 @@ while true; do
                         ui_echo " \e[90m[Local Mode] Skipping ESO-Hub Upload ($SV_NAME).\e[0m"
                         cp -f "$SAVED_VAR_DIR/$SV_NAME" "$UP_SNAP" 2>/dev/null
                     else
-                        ui_echo " \e[36mUploading local scan data ($SV_NAME)...\e[0m"
-                        if (curl -s -A "ESOHubClient/1.0.9" -F "file=@$SAVED_VAR_DIR/$SV_NAME" "https://data.eso-hub.com$UP_EP?user_token=$EH_USER_TOKEN" > /dev/null 2>&1); then
+                        if [ "$SV_NAME" = "EsoTradingHub.lua" ] && [ -z "$RAW_DATA" ]; then
                             cp -f "$SAVED_VAR_DIR/$SV_NAME" "$UP_SNAP" 2>/dev/null
-                            EH_UPLOAD_COUNT=$((EH_UPLOAD_COUNT + 1))
-                            ui_echo " \e[92m[+] Upload finished ($SV_NAME).\e[0m"
-                            log_event "INFO" "Uploaded $SV_NAME successfully."
+                        elif [ "$SV_NAME" = "EsoHubScanner.lua" ] && ! grep -qE '\|H[0-9a-fA-F]*:item:[0-9]+' "$SAVED_VAR_DIR/$SV_NAME" 2>/dev/null; then
+                            cp -f "$SAVED_VAR_DIR/$SV_NAME" "$UP_SNAP" 2>/dev/null
                         else
-                            log_event "ERROR" "Failed to upload $SV_NAME."
+                            ui_echo " \e[36mUploading local scan data ($SV_NAME)...\e[0m"
+                            if (curl -s -m 60 -A "ESOHubClient/1.0.9" -F "file=@$SAVED_VAR_DIR/$SV_NAME" "https://data.eso-hub.com$UP_EP?user_token=$EH_USER_TOKEN" > /dev/null 2>&1); then
+                                cp -f "$SAVED_VAR_DIR/$SV_NAME" "$UP_SNAP" 2>/dev/null
+                                EH_UPLOAD_COUNT=$((EH_UPLOAD_COUNT + 1))
+                                ui_echo " \e[92m[+] Upload finished ($SV_NAME).\e[0m"
+                                log_event "INFO" "Uploaded $SV_NAME successfully."
+                            else
+                                ui_echo " \e[31m[-] Upload failed ($SV_NAME).\e[0m"
+                                log_event "ERROR" "Failed to upload $SV_NAME."
+                            fi
                         fi
                     fi
                 fi
@@ -2731,8 +2836,9 @@ while true; do
                         ui_echo " \e[36mDownloading: $FNAME.zip\e[0m"
                         log_event "INFO" "Downloading $FNAME.zip"
                         TEMP_DIR_USED=true
-                        if ! curl -s -f -# -L -A "ESOHubClient/1.0.9" -o "EH_$ID_NUM.zip" "$DL_URL" 2>&3; then
-                            curl -s -f -# -L -A "$RAND_UA" -o "EH_$ID_NUM.zip" "$DL_URL" 2>&3
+                        
+                        if ! curl -s -f -# -m 30 -L -A "ESOHubClient/1.0.9" -o "EH_$ID_NUM.zip" --url "$DL_URL" </dev/null 2>&3; then
+                            curl -s -f -# -m 30 -L -A "$RAND_UA" -o "EH_$ID_NUM.zip" --url "$DL_URL" </dev/null 2>&3
                         fi
                         
                         if unzip -t "EH_$ID_NUM.zip" > /dev/null 2>&1; then
@@ -2769,7 +2875,7 @@ while true; do
         if [ "$ENABLE_LOCAL_MODE" = true ]; then
             ui_echo " \e[90m[Local Mode] Skipping HarvestMap updates.\e[0m\n"
         else
-            ui_echo " \e[31m[-] HarvestMap is not enabled in AddOnSettings.txt. \e[35mSkipping...\e[0m\n"
+            ui_echo " \e[31m[-] HarvestMap installed or enabled in AddOnSettings.txt. \e[35mSkipping...\e[0m\n"
         fi
         log_event "WARN" "HarvestMap skipped."
     else
