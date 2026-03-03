@@ -163,8 +163,10 @@ if [ ! -f "$DB_FILE" ] || [ ! -s "$DB_FILE" ]; then
     
     if [ $? -eq 0 ]; then
         echo -e " \e[32m[✓] database successfully downloaded!\e[0m\n"
+        log_event "INFO" "Database template successfully downloaded."
     else
         echo -e " \e[31m[!] Failed to download database. An empty one will be built automatically.\e[0m\n"
+        log_event "WARN" "Failed to download database template. Building empty."
     fi
 fi
 
@@ -337,10 +339,11 @@ ensure_missing_addon() {
                                 CONFIG_CHANGED=true
                             fi
                         fi
-                        
-                        ui_echo " \e[92m[+] $a_name installed successfully.\e[0m"
-                
-                # Enable in AddOnSettings.txt for all characters
+                    
+                    ui_echo " \e[92m[+] $a_name installed successfully.\e[0m"
+                    log_event "INFO" "Addon $a_name automatically downloaded and installed."
+            
+            # Enable in AddOnSettings.txt for all characters
                 local settings_file="$ADDON_DIR/../AddOnSettings.txt"
                 if [ -f "$settings_file" ]; then
                     if [ "$a_name" = "EsoTradingHub" ]; then
@@ -360,10 +363,12 @@ ensure_missing_addon() {
                 return 0
             else
                 ui_echo " \e[31m[-] Download failed for $a_name.\e[0m"
+                log_event "ERROR" "Download failed for missing addon: $a_name."
                 return 1
             fi
         else
             ui_echo " \e[90mUser Declined download of $a_name. Will not ask again.\e[0m"
+            log_event "WARN" "User declined download for missing addon: $a_name."
             printf -v "$skip_var" "true"
             save_config
             return 1
@@ -402,10 +407,7 @@ send_notification() {
     if [ "$OS_TYPE" = "Darwin" ]; then
         osascript -e "display notification \"$msg\" with title \"$APP_TITLE\"" 2>/dev/null
     else
-        # Detect Steamdeck Gaming Mode
-        if [ "$XDG_CURRENT_DESKTOP" = "gamescope" ] || pgrep -x "gamescope" > /dev/null; then
-            zenity --info --text="$msg" --title="$APP_TITLE" --width=300 2>/dev/null &
-        elif command -v notify-send > /dev/null; then
+        if command -v notify-send > /dev/null; then
             notify-send -i "dialog-information" -t 5000 --hint=string:category:system "$APP_TITLE" "$msg" 2>/dev/null
         fi
     fi
@@ -1978,6 +1980,7 @@ while true; do
                         unzip -q -o "$TEMP_DIR_ROOT/${fname}.zip" -d "$ADDON_DIR/" > /dev/null 2>&1
                         rm -f "$TEMP_DIR_ROOT/${fname}.zip"
                         ui_echo " \e[92m[+] $fname installed successfully.\e[0m"
+                        log_event "INFO" "ESO-Hub Addon initially downloaded & installed: $fname"
                         
                         # Save version so it skips redownloading
                         var_name="EH_LOC_$id_num"
@@ -1991,8 +1994,9 @@ while true; do
                             rm -f "$ADDON_DIR/../AddOnSettings.txt.bak" 2>/dev/null
                         fi
                     else
-                    ui_echo " \e[31m[-] Download failed for $fname (Timeout or Blocked).\e[0m"
-                fi
+                        ui_echo " \e[31m[-] Download failed for $fname (Timeout or Blocked).\e[0m"
+                        log_event "ERROR" "Initial download failed for ESO-Hub Addon: $fname"
+                    fi
             fi
         done <<< "$addon_lines"
     else
@@ -3042,8 +3046,16 @@ while true; do
         log_event "INFO" "Entering standalone background loop."
         if [ "$SILENT" = true ]; then
             while [ $(date +%s) -lt $target_time ]; do
-                read -t 1 -n 1 -s key 2>/dev/null || true
-            done 2>/dev/null
+                sleep 5
+                
+                current_loop_time=$(date +%s)
+                if (( current_loop_time % 5 == 0 )); then
+                    if ! check_game_active; then
+                        log_event "INFO" "Game closed. Exiting."
+                        exit 0
+                    fi
+                fi
+            done
         else
             echo -e " \e[1;97;101m Restarting Sequence in 60 minutes... (Standalone Mode) \e[0m\n"
             while [ $(date +%s) -lt $target_time ]; do
