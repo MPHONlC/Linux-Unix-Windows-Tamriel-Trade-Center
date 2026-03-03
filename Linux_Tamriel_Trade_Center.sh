@@ -20,7 +20,7 @@ unset LD_PRELOAD
 unset LD_LIBRARY_PATH
 unset STEAM_LD_PRELOAD
 
-APP_VERSION="4.9"
+APP_VERSION="5.0"
 OS_TYPE=$(uname -s)
 TARGET_DIR="$HOME/Documents"
 
@@ -586,8 +586,6 @@ run_setup() {
     
     SHORTCUT_SRV_FLAG="--na"
     [ "$AUTO_SRV" == "2" ] && SHORTCUT_SRV_FLAG="--eu"
-    SILENT_FLAG=""
-    [ "$SILENT" == true ] && SILENT_FLAG="--silent"
     LOOP_FLAG="--once"
     [ "$AUTO_MODE" == "2" ] && LOOP_FLAG="--loop"
 
@@ -614,9 +612,9 @@ run_setup() {
 Version=1.0
 Name=$APP_TITLE
 Comment=Cross-Platform Auto-Updater for TTC, HarvestMap & ESO-Hub - Created by @APHONIC
-Exec="$TARGET_DIR/$SCRIPT_NAME" $SILENT_FLAG $SHORTCUT_SRV_FLAG $LOOP_FLAG
+Exec="$TARGET_DIR/$SCRIPT_NAME" $SHORTCUT_SRV_FLAG $LOOP_FLAG
 Icon=$ICON_PATH
-Terminal=$([ "$SILENT" = true ] && echo "false" || echo "true")
+Terminal=true
 Type=Application
 Categories=Game;Utility;
 EOF
@@ -648,7 +646,7 @@ EOF
     
     # Check user is on Steamdeck Gaming Mode
     IS_GAMESCOPE=false
-    if [ "$XDG_CURRENT_DESKTOP" = "gamescope" ] || pgrep -x "gamescope" > /dev/null; then
+    if grep -qi "steamos" /etc/os-release 2>/dev/null; then
         IS_GAMESCOPE=true
     fi
 
