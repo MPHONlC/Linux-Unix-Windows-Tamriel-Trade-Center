@@ -166,19 +166,35 @@ Terminal=false
 
 ## 📜 LICENSE
 
-**Copyright (c) 2026 @APHONlC - All Rights Reserved.**
+**Copyright 2021-2026 @APHONlC**
 
-1. **PROHIBITION ON REDISTRIBUTION:** You may not re-upload, mirror, or distribute this addon or its source code to any website or platform (e.g., ESOUI, NexusMods, Bethesda.net) without explicit written permission from the author (@APHONlC).
-2. **PROHIBITION ON MODIFICATION:** You may not modify, transform, or build upon this code for the purpose of public release without explicit written permission.
-3. **ATTRIBUTION:** In any case where permission is granted, clear attribution to @APHONlC must be maintained.
-4. **PERSONAL USE:** Users are free to modify the code for their own PRIVATE personal use on their own machine only.
+Licensed under the **Apache License, Version 2.0** (the "License"); you may not use this file except in compliance with the License. You may obtain a copy of the License at:
+
+[http://www.apache.org/licenses/LICENSE-2.0](http://www.apache.org/licenses/LICENSE-2.0)
+
+Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, **WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND**, either express or implied. See the License for the specific language governing permissions and limitations under the License.
 
 *For permissions or inquiries, contact @APHONlC on ESOUI or GitHub.*
 
 ---
 
+## ⚖️ How to Attribute This Work
+
+If you use, redistribute, or modify this script in your own project, please use the following attribution format:
+
+* **Project Name:** Tamriel Trade Center, HarvestMap & ESO-Hub Auto-Updater
+* **Author:** @APHONlC
+* **License:** [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0)
+* **Original Source:** [Tamriel Trade Center, HarvestMap & ESO-Hub Auto-Updater (Linux, macOS, SteamDeck, & Windows)](https://www.esoui.com/downloads/info3249-TamrielTradeCenterHarvestMapampESO-HubAuto-UpdaterLinuxmacOSSteamDeckampWindows.html)
+
+### Example Notice for Derived Works:
+> This work includes code from the "Tamriel Trade Center, HarvestMap & ESO-Hub Auto-Updater (Linux, macOS, SteamDeck, & Windows)" by @APHONlC, licensed under the Apache License 2.0.
+
+---
+
 ### 🎖️ Credits & Disclaimer
 * **Data Sources:** Tamriel Trade Centre, HarvestMap, and ESO-Hub. This tool is a third-party utility and is not officially affiliated with the addon authors.
+* **Licensing Boundary:** This script is licensed under **Apache 2.0**. This license applies *only* to the script's code and logic. It does not grant any rights to the third-party addons it interacts with, nor does it override the Terms of Service of the data providers (TTC/ESO-Hub/HarvestMap/UESP).
 * **Liability:** Provided "as is." Always back up your **SavedVariables** folder.
 
 **Check out my other addons:**
