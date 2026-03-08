@@ -197,9 +197,9 @@ If you use, redistribute, or modify this script in your own project, please use 
 * **Licensing Boundary:** This script is licensed under **Apache 2.0**. This license applies *only* to the script's code and logic. It does not grant any rights to the third-party addons it interacts with, nor does it override the Terms of Service of the data providers (TTC/ESO-Hub/HarvestMap).
 * **Liability:** Provided "as is." Always back up your **SavedVariables** folder.
 
-**Check out my other addons:**
-* [Auto Lua Memory Cleaner](https://www.esoui.com/downloads/fileinfo.php?id=4388#info) - Intelligent LUA garbage collection.
-* [Permanent Memento](https://www.esoui.com/downloads/fileinfo.php?id=4116#info) - Automate your favorite mementos.
+**📂 Check out my other addons:**
+* [Auto Lua Memory Cleaner](https://www.esoui.com/downloads/fileinfo.php?id=4388#info) - Intelligent, low footprint event based LUA memory garbage collection for PC and Console.
+* [Permanent Memento](https://www.esoui.com/downloads/fileinfo.php?id=4116#info) - Automate and loop or share your favorite mementos..
 
 <div align="center">
 
