@@ -236,6 +236,10 @@ I designed this script to be safe and clean. It completely isolates its environm
 [Auto Lua Memory Cleaner](https://www.esoui.com/downloads/fileinfo.php?id=4388#info) • [Permanent Memento](https://www.esoui.com/downloads/fileinfo.php?id=4116#info)
 
 <br>
+
+[![Buy Me A Coffee](https://img.shields.io/badge/Support-Buy%20Me%20A%20Coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/aph0nlc)
+<br>
+<br>
 <a id="bug-title"></a>
 
 [![BUG REPORTS](https://img.shields.io/badge/BUG%20REPORTS-ff3300?style=for-the-badge)](#bug-title)
@@ -244,12 +248,5 @@ If you encounter any issues, please submit a report here or at:
 
 **[ESOUI Bug Portal](https://www.esoui.com/portal.php?id=360&a=listbugs)**
 
-<a id="support"></a>
-
-[![SUPPORT](https://img.shields.io/badge/SUPPORT-ff3300?style=for-the-badge)](#support)
-
-If this project has been useful to you, consider supporting its development:<br>
-<br>
-[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/aph0nlc)
 
 </div>
