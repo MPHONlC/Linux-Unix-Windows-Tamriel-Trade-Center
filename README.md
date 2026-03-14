@@ -2,7 +2,7 @@
 
 # [Tamriel Trade Center, HarvestMap & ESO-Hub Auto-Updater (Linux, macOS, SteamDeck, & Windows)](https://www.esoui.com/downloads/info3249-TamrielTradeCenterHarvestMapampESO-HubAuto-UpdaterLinuxmacOSSteamDeckampWindows.html)
 
-![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows%20%7C%20SteamDeck-blue) ![License](https://img.shields.io/badge/license-All%20Rights%20Reserved-red) ![Game](https://img.shields.io/badge/Game-ESO-orange)
+![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows%20%7C%20SteamDeck-blue) ![License](https://img.shields.io/badge/license-Apache%202.0-red) ![Game](https://img.shields.io/badge/Game-ESO-orange)
 
 </div>
 
